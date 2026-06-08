@@ -193,22 +193,22 @@ def initialize_database_cached() -> bool:
     return True
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def load_table_cached(table_name: str) -> pd.DataFrame:
     return db.read_table(table_name)
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def load_tables_cached(table_names: tuple[str, ...]) -> dict[str, pd.DataFrame]:
     return db.read_tables(table_names)
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def calculate_portfolio_cached(holdings: pd.DataFrame, prices: pd.DataFrame) -> pd.DataFrame:
     return calculate_portfolio(holdings, prices)
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def make_all_charts_cached(calculated: pd.DataFrame) -> dict:
     return make_all_charts(calculated)
 
@@ -724,9 +724,8 @@ def show_mobile_bulk_buy() -> None:
                     f"희주 {format_quantity_for_display(matched.get('희주_보유수량'), asset_class, market, symbol)}"
                 )
                 st.caption(f"평균단가: {format_number_for_display(matched.get('평균단가'), 2)}")
-            quantity = st.text_input("추가매수수량", key=f"mobile_buy_quantity_{row_id}")
-            price = st.text_input("추가매수단가", key=f"mobile_buy_price_{row_id}")
-            memo = st.text_input("메모", key=f"mobile_buy_memo_{row_id}")
+            quantity = st.text_input("추가매수수량", key=f"mobile_buy_quantity_{row_id}", on_change=format_session_number_input, args=(f"mobile_buy_quantity_{row_id}",))
+            price = st.text_input("추가매수단가", key=f"mobile_buy_price_{row_id}", on_change=format_session_number_input, args=(f"mobile_buy_price_{row_id}",))
             rows.append(
                 {
                     "매수계좌": account,
@@ -737,7 +736,7 @@ def show_mobile_bulk_buy() -> None:
                     "통화": currency,
                     "매수수량": parse_number_from_display(quantity) or 0,
                     "매수단가": parse_number_from_display(price) or 0,
-                    "메모": memo,
+                    "메모": "",
                 }
             )
     if st.button("추가매수 일괄 반영", type="primary", use_container_width=True):
@@ -754,14 +753,17 @@ def show_mobile_capital_flows() -> None:
         st.session_state["mobile_capital_amount_input"] = ""
         st.session_state["mobile_capital_memo_input"] = ""
     with st.container(border=True):
-        amount_text = st.text_input("금액", key="mobile_capital_amount_input", on_change=on_mobile_capital_amount_change)
+        flow_type = st.radio("유형", ["추가입금", "초기원금"], horizontal=True, key="mobile_capital_flow_type")
+        amount_text = st.text_input("금액", key="mobile_capital_amount_input", placeholder="예: 1000000")
         amount = parse_integer_amount(amount_text)
+        if amount is not None:
+            st.caption(f"입력금액: {amount:,}원")
         memo = st.text_input("메모", key="mobile_capital_memo_input")
         if st.button("투자원금 기록", type="primary", use_container_width=True):
             if amount is None:
                 st.error("금액을 입력하세요.")
                 st.stop()
-            updated = append_capital_flow(flows, "추가입금", amount, memo=memo)
+            updated = append_capital_flow(flows, flow_type, amount, memo=memo)
             db.backup_database("before_mobile_capital_flow_save")
             db.write_table("capital_flows", updated)
             clear_cached_tables("capital_flows")
@@ -787,10 +789,8 @@ def show_mobile_capital_flows() -> None:
                 st.rerun()
 
 
-def on_mobile_capital_amount_change() -> None:
-    st.session_state["mobile_capital_amount_input"] = format_amount_input_text(
-        st.session_state.get("mobile_capital_amount_input", "")
-    )
+def format_session_number_input(key: str) -> None:
+    st.session_state[key] = format_amount_input_text(st.session_state.get(key, ""))
 
 
 def show_mobile_settings() -> None:
@@ -1024,9 +1024,20 @@ def show_bulk_buy() -> None:
                 )
                 st.text(f"현재 평균단가: {format_number_for_display(default_avg, 2)}")
             q_col, p_col = st.columns(2)
-            quantity_text = q_col.text_input("추가매수수량", key=f"buy_quantity_{row_id}", placeholder="예: 1,000 또는 0.12345678")
-            price_text = p_col.text_input("추가매수단가", key=f"buy_price_{row_id}", placeholder="예: 75,000.55")
-            memo = st.text_input("메모", key=f"buy_memo_{row_id}")
+            quantity_text = q_col.text_input(
+                "추가매수수량",
+                key=f"buy_quantity_{row_id}",
+                placeholder="예: 1,000 또는 0.12345678",
+                on_change=format_session_number_input,
+                args=(f"buy_quantity_{row_id}",),
+            )
+            price_text = p_col.text_input(
+                "추가매수단가",
+                key=f"buy_price_{row_id}",
+                placeholder="예: 75,000.55",
+                on_change=format_session_number_input,
+                args=(f"buy_price_{row_id}",),
+            )
             rows.append(
                 {
                     "매수계좌": account,
@@ -1037,7 +1048,7 @@ def show_bulk_buy() -> None:
                     "통화": default_currency,
                     "매수수량": parse_number_from_display(quantity_text) or 0,
                     "매수단가": parse_number_from_display(price_text) or 0,
-                    "메모": memo,
+                    "메모": "",
                 }
             )
     buys = pd.DataFrame(rows)
