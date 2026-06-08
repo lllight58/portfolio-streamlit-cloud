@@ -229,7 +229,7 @@ POSTGRES_COLUMN_MAP: dict[str, dict[str, str]] = {
 
 
 def database_backend() -> str:
-    return os.getenv("DATABASE_BACKEND", "sqlite").strip().lower() or "sqlite"
+    return os.getenv("DATABASE_BACKEND", "supabase").strip().lower() or "supabase"
 
 
 def sqlite_path() -> Path:
@@ -247,7 +247,10 @@ def get_database_url(backend: str | None = None) -> str:
     if selected == "supabase":
         url = os.getenv("SUPABASE_POOLER_DATABASE_URL", "").strip() or os.getenv("DATABASE_URL", "").strip()
         if not url:
-            raise ValueError("DATABASE_BACKEND=supabase 이지만 SUPABASE_POOLER_DATABASE_URL과 DATABASE_URL이 비어 있습니다.")
+            raise ValueError(
+                "DATABASE_BACKEND=supabase 이지만 SUPABASE_POOLER_DATABASE_URL과 DATABASE_URL이 비어 있습니다. "
+                "Streamlit Cloud의 App settings > Secrets에 기존 Supabase pooler URL을 넣어야 이전 데이터가 보입니다."
+            )
         return _normalize_postgres_url(url)
     raise ValueError("DATABASE_BACKEND는 sqlite 또는 supabase만 지원합니다.")
 
@@ -271,6 +274,8 @@ def initialize_database() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
     BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
+    if is_supabase():
+        return
     if is_sqlite():
         sqlite_path().parent.mkdir(parents=True, exist_ok=True)
     for table_name, empty_df in EMPTY_TABLES.items():
@@ -305,17 +310,47 @@ def read_table(table_name: str) -> pd.DataFrame:
     return read_table_from_backend(table_name, database_backend())
 
 
+def read_tables(table_names: list[str] | tuple[str, ...]) -> dict[str, pd.DataFrame]:
+    selected = database_backend()
+    for table_name in table_names:
+        _validate_table(table_name)
+    if selected == "sqlite":
+        return {table_name: read_table_from_backend(table_name, selected) for table_name in table_names}
+
+    engine = get_engine(selected)
+    result: dict[str, pd.DataFrame] = {}
+    try:
+        for table_name in table_names:
+            try:
+                df = pd.read_sql_query(f'select * from "{table_name}"', engine)
+            except Exception as exc:
+                if "does not exist" in str(exc).lower() or "undefinedtable" in str(exc).lower():
+                    result[table_name] = EMPTY_TABLES[table_name].copy()
+                    continue
+                raise
+            df = _from_storage_columns(table_name, df, selected)
+            df = _drop_metadata_columns(df)
+            result[table_name] = TABLE_NORMALIZERS[table_name](df)
+    finally:
+        engine.dispose()
+    return result
+
+
 def read_table_from_backend(table_name: str, backend: str) -> pd.DataFrame:
     _validate_table(table_name)
-    if not table_exists(table_name, backend):
-        return EMPTY_TABLES[table_name].copy()
     if backend == "sqlite":
+        if not table_exists(table_name, backend):
+            return EMPTY_TABLES[table_name].copy()
         with sqlite3.connect(sqlite_path()) as conn:
             df = pd.read_sql_query(f'select * from "{table_name}"', conn)
         return TABLE_NORMALIZERS[table_name](_drop_metadata_columns(df))
     engine = get_engine(backend)
     try:
         df = pd.read_sql_query(f'select * from "{table_name}"', engine)
+    except Exception as exc:
+        if "does not exist" in str(exc).lower() or "undefinedtable" in str(exc).lower():
+            return EMPTY_TABLES[table_name].copy()
+        raise
     finally:
         engine.dispose()
     df = _from_storage_columns(table_name, df, backend)
@@ -338,13 +373,14 @@ def write_table_to_backend(table_name: str, df: pd.DataFrame | None, backend: st
         return
     engine = get_engine(backend)
     try:
-        if not table_exists(table_name, backend):
+        try:
+            existing_columns = _table_columns(engine, table_name)
+        except Exception:
             storage = _to_storage_columns(table_name, normalized, backend)
             storage = storage.replace({"": None})
             storage = _with_timestamps(storage, replace=replace, backend=backend, existing_columns=None)
             storage.to_sql(table_name, engine, if_exists="replace", index=False)
             return
-        existing_columns = _table_columns(engine, table_name)
         storage = _to_existing_table_columns(table_name, normalized, backend, existing_columns)
         storage = storage.replace({"": None})
         storage = _with_timestamps(storage, replace=replace, backend=backend, existing_columns=existing_columns)
@@ -395,6 +431,8 @@ def backup_database(reason: str = "manual") -> Path | None:
         target = BACKUPS_DIR / f"portfolio_db_{reason}_{datetime.now():%Y%m%d_%H%M%S}.db"
         shutil.copy2(source, target)
         return target
+    if str(os.getenv("ENABLE_SUPABASE_EXCEL_BACKUP", "")).strip().lower() not in {"1", "true", "yes", "y", "on"}:
+        return None
     target = BACKUPS_DIR / f"portfolio_db_{reason}_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
     export_excel(target)
     return target

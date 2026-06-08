@@ -62,6 +62,8 @@ https://your-portfolio-app.streamlit.app
 ## 4. Secrets에 Supabase 설정 넣기
 
 Streamlit Cloud에서는 `.env` 파일보다 Secrets를 사용합니다.
+로컬 PC에 있는 `.env`나 `.streamlit/secrets.toml`은 Streamlit Cloud에 자동으로 올라가지 않습니다.
+Streamlit Cloud에 배포한 앱이 이전 데이터를 보려면, 아래 값을 Streamlit Cloud의 Secrets 화면에 직접 넣어야 합니다.
 
 앱 설정 우선순위:
 
@@ -90,6 +92,8 @@ SEC_USER_AGENT = "Personal Portfolio Disclosure Tracker your_email@example.com"
 Supabase 연결 테스트
 Supabase 테이블 생성/점검
 ```
+
+배포된 앱에서 데이터가 비어 보이면 거의 항상 Secrets가 빠졌거나 다른 DB URL을 바라보는 상태입니다. 이 앱은 기본 저장소를 Supabase로 둡니다. Secrets가 없으면 샘플 SQLite 데이터로 조용히 넘어가지 않고 DB 초기화 오류를 표시합니다.
 
 ## 5. 모바일에서 홈 화면에 추가하기
 

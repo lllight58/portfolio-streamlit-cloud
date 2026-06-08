@@ -51,7 +51,7 @@ from src.repositories.holdings_repository import (
     ensure_row_ids,
     update_holdings_sort_order,
 )
-from src.symbol_resolver import normalize_symbol
+from src.symbol_resolver import get_security_name, normalize_symbol
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -89,14 +89,17 @@ st.set_page_config(page_title="포트폴리오", page_icon=str(APP_DIR / "assets
 def main() -> None:
     apply_mobile_style()
     st.title(APP_TITLE)
-    st.caption(f"공유 DB: {db.db_label()}")
     init_error = None
     try:
         initialize_database_cached()
     except Exception as exc:
         init_error = exc
         st.error(f"DB 초기화 실패: {exc}")
-        st.info("Supabase를 사용하려면 Streamlit secrets, OS 환경변수, 로컬 .env 순서로 Supabase URL과 테이블 생성 상태를 확인하세요.")
+        st.info(
+            "Streamlit Cloud에 배포한 앱도 이전 데이터를 보려면 App settings > Secrets에 "
+            "DATABASE_BACKEND=supabase와 SUPABASE_POOLER_DATABASE_URL을 반드시 넣어야 합니다. "
+            "로컬 .env 파일은 Streamlit Cloud에 자동 반영되지 않습니다."
+        )
 
     mode = st.radio(
         "화면 모드",
@@ -167,11 +170,21 @@ def render_mobile_nav() -> str:
 
 
 def load_core() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    holdings = load_table_cached("holdings")
-    prices = load_table_cached("prices")
-    capital_flows = load_table_cached("capital_flows")
+    tables = load_tables_cached(("holdings", "prices", "capital_flows"))
+    holdings = tables["holdings"]
+    prices = tables["prices"]
+    capital_flows = tables["capital_flows"]
     calculated = calculate_portfolio_cached(holdings, prices)
     return holdings, prices, capital_flows, calculated
+
+
+def load_mobile_dashboard_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, str], pd.DataFrame]:
+    tables = load_tables_cached(("holdings", "prices", "capital_flows", "settings", "portfolio_snapshots"))
+    holdings = tables["holdings"]
+    prices = tables["prices"]
+    calculated = calculate_portfolio_cached(holdings, prices)
+    settings_values = settings_to_dict(tables["settings"])
+    return calculated, tables["capital_flows"], tables["portfolio_snapshots"], settings_values, holdings
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -183,6 +196,11 @@ def initialize_database_cached() -> bool:
 @st.cache_data(ttl=60, show_spinner=False)
 def load_table_cached(table_name: str) -> pd.DataFrame:
     return db.read_table(table_name)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_tables_cached(table_names: tuple[str, ...]) -> dict[str, pd.DataFrame]:
+    return db.read_tables(table_names)
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -207,6 +225,10 @@ def clear_cached_tables(*table_names: str) -> None:
             load_table_cached.clear()
         except Exception:
             load_table_cached.clear()
+    try:
+        load_tables_cached.clear()
+    except Exception:
+        pass
     try:
         calculate_portfolio_cached.clear()
     except Exception:
@@ -307,15 +329,17 @@ def show_dashboard() -> None:
 
 
 def show_mobile_dashboard() -> None:
-    holdings, prices, capital_flows, calculated = load_core()
-    settings_values = settings_to_dict(load_table_cached("settings"))
+    calculated, capital_flows, snapshots, settings_values, _ = load_mobile_dashboard_data()
     principal = current_invested_principal(capital_flows)
     total_value = float(calculated["원화 환산 평가금액"].sum()) if "원화 환산 평가금액" in calculated.columns else 0.0
     profit = total_value - principal
     return_rate = (profit / principal) if principal else 0.0
-    yearly_return = calculate_this_year_return(load_table_cached("portfolio_snapshots"), total_value)
+    yearly_return = calculate_this_year_return(snapshots, total_value)
     saebit_value = float(calculated.get("새빛_평가금액", pd.Series(dtype=float)).sum())
     heeju_value = float(calculated.get("희주_평가금액", pd.Series(dtype=float)).sum())
+    benchmark_return = st.session_state.get("benchmark_return")
+    benchmark_error = st.session_state.get("benchmark_error")
+    benchmark_name = benchmark_label(settings_values)
 
     st.markdown("### 홈")
     metrics = [
@@ -324,29 +348,42 @@ def show_mobile_dashboard() -> None:
         ("평가손익", format_krw(profit), profit),
         ("누적수익률", format_percent(return_rate), return_rate),
         ("올해 수익률", format_percent(yearly_return), yearly_return),
+        ("벤치마크 올해 수익률", format_percent(benchmark_return) if benchmark_return is not None else "미조회", benchmark_return),
         ("새빛 계좌", format_krw(saebit_value), None),
         ("희주 계좌", format_krw(heeju_value), None),
     ]
     render_mobile_metric_grid(metrics)
+    st.caption(f"벤치마크: {benchmark_name}")
+    if benchmark_error:
+        st.caption(benchmark_error)
+    if st.button("벤치마크 올해 수익률 조회", use_container_width=True):
+        with st.spinner("벤치마크 수익률을 조회하는 중입니다."):
+            st.session_state["benchmark_return"], st.session_state["benchmark_error"] = fetch_dashboard_benchmark(settings_values)
+        st.rerun()
 
     if calculated.empty:
         st.info("자산 데이터가 없습니다. 자산 메뉴 또는 Excel 업로드로 데이터를 추가하세요.")
         return
 
-    charts = make_all_charts_cached(calculated)
-    chart_items = [
-        ("상위자산군 비중", "major_asset_donut"),
-        ("세부자산군 비중", "asset_donut"),
-        ("ETF 내부 종목 비중", "etf_weight_bar"),
-        ("개별주 내부 종목 비중", "individual_stock_weight_bar"),
-        ("계좌별 자산군 구성", "account_value_bar"),
-        ("새빛 계좌 자산군 비중", "saebit_asset_donut"),
-        ("희주 계좌 자산군 비중", "heeju_asset_donut"),
-    ]
-    st.markdown("### 그래프")
-    for label, key in chart_items:
-        with st.expander(label, expanded=key in {"major_asset_donut", "asset_donut"}):
-            render_chart(charts.get(key))
+    with st.expander("그래프", expanded=False):
+        if st.button("그래프 불러오기", use_container_width=True):
+            st.session_state["mobile_charts_loaded"] = True
+        if st.session_state.get("mobile_charts_loaded"):
+            charts = make_all_charts_cached(calculated)
+            chart_items = [
+                ("상위자산군 비중", "major_asset_donut"),
+                ("세부자산군 비중", "asset_donut"),
+                ("ETF 내부 종목 비중", "etf_weight_bar"),
+                ("개별주 내부 종목 비중", "individual_stock_weight_bar"),
+                ("계좌별 자산군 구성", "account_value_bar"),
+                ("새빛 계좌 자산군 비중", "saebit_asset_donut"),
+                ("희주 계좌 자산군 비중", "heeju_asset_donut"),
+            ]
+            for label, key in chart_items:
+                st.markdown(f"#### {label}")
+                render_chart(charts.get(key))
+        else:
+            st.caption("첫 화면 속도를 위해 그래프는 필요할 때만 불러옵니다.")
 
     st.markdown("### 보유 종목")
     display_calculated = build_dashboard_holdings_table(calculated)
@@ -376,21 +413,15 @@ def show_mobile_dashboard() -> None:
 
 
 def render_mobile_metric_grid(metrics: list[tuple[str, str, object]]) -> None:
-    cards = []
-    for label, value, signed in metrics:
-        color = NEUTRAL_COLOR
-        if signed is not None:
-            number = parse_number(signed)
-            color = PROFIT_COLOR if number > 0 else LOSS_COLOR if number < 0 else NEUTRAL_COLOR
-        cards.append(
-            f"""
-            <div class="app-card metric-card">
-              <div class="metric-label">{html.escape(label)}</div>
-              <div class="metric-value" style="color:{color};">{html.escape(str(value))}</div>
-            </div>
-            """
-        )
-    st.markdown(f'<div class="metric-grid">{"".join(cards)}</div>', unsafe_allow_html=True)
+    for start in range(0, len(metrics), 2):
+        columns = st.columns(2)
+        for column, metric in zip(columns, metrics[start : start + 2]):
+            label, value, signed = metric
+            delta = None
+            if signed is not None and label not in {"평가손익"}:
+                delta = value if str(value).strip() not in {"미조회", "-"} else None
+            with column:
+                st.metric(label, value, delta=delta)
 
 
 def show_mobile_holdings_editor() -> None:
@@ -406,33 +437,52 @@ def show_mobile_holdings_editor() -> None:
         st.info("등록된 자산이 없습니다.")
         return
 
-    for idx, row in holdings.iterrows():
-        row_id = str(row.get("row_id", "") or f"row-{idx}")
+    labels = mobile_holding_labels(holdings)
+    selected_label = st.selectbox("수정할 자산 선택", list(labels.keys()), key="mobile_selected_holding")
+    selected_index = labels.get(selected_label)
+    if selected_index is not None:
+        row = holdings.loc[selected_index]
+        row_id = str(row.get("row_id", "") or f"row-{selected_index}")
         symbol = str(row.get("티커 또는 종목코드", "") or "")
         name = str(row.get("종목명", "") or "")
         sub_asset = str(row.get("세부자산군", row.get("자산군", "")) or "")
-        st.markdown(
-            f"""
-            <div class="app-card holding-summary">
-              <strong>{html.escape(symbol)} | {html.escape(name)}</strong><br>
-              <span>{html.escape(sub_asset)} · {html.escape(str(row.get("시장", "")))} · {html.escape(str(row.get("통화", "")))}</span><br>
-              <span>새빛: {html.escape(format_quantity_for_display(row.get("새빛_보유수량"), sub_asset, row.get("시장", ""), symbol))}</span>
-              <span> · 희주: {html.escape(format_quantity_for_display(row.get("희주_보유수량"), sub_asset, row.get("시장", ""), symbol))}</span><br>
-              <span>평균단가: {html.escape(format_number_for_display(row.get("평균단가"), 2))}</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        with st.expander("수정"):
+        with st.container(border=True):
+            st.write(f"**{symbol} | {name}**")
+            st.caption(f"{sub_asset} · {row.get('시장', '')} · {row.get('통화', '')}")
+            st.caption(
+                "새빛: "
+                f"{format_quantity_for_display(row.get('새빛_보유수량'), sub_asset, row.get('시장', ''), symbol)}"
+                " · 희주: "
+                f"{format_quantity_for_display(row.get('희주_보유수량'), sub_asset, row.get('시장', ''), symbol)}"
+            )
+            st.caption(f"평균단가: {format_number_for_display(row.get('평균단가'), 2)}")
+        with st.expander("선택 자산 수정", expanded=True):
             render_mobile_holding_form(holdings, row, row_id)
-            if st.button("삭제", key=f"mobile_delete_holding_{row_id}", use_container_width=True):
+            if st.button("선택 자산 삭제", key=f"mobile_delete_holding_{row_id}", use_container_width=True):
                 db.backup_database("before_mobile_holding_delete")
                 delete_holdings_by_row_ids([row_id])
                 clear_cached_tables("holdings")
+                st.session_state.pop("mobile_selected_holding", None)
                 st.session_state["mobile_holdings_message"] = f"{symbol} 자산을 삭제했습니다."
                 st.rerun()
 
-    render_holdings_order_controls(holdings)
+    with st.expander("자산 표시 순서 변경", expanded=False):
+        render_holdings_order_controls(holdings)
+
+
+def mobile_holding_labels(holdings: pd.DataFrame) -> dict[str, int]:
+    labels: dict[str, int] = {}
+    seen: dict[str, int] = {}
+    for idx, row in holdings.iterrows():
+        symbol = str(row.get("티커 또는 종목코드", "") or "")
+        name = str(row.get("종목명", "") or "")
+        base = f"{symbol} | {name}" if name else symbol
+        if not base.strip(" |"):
+            base = f"이름 없는 자산 {idx + 1}"
+        seen[base] = seen.get(base, 0) + 1
+        label = base if seen[base] == 1 else f"{base} ({seen[base]})"
+        labels[label] = int(idx)
+    return labels
 
 
 def render_mobile_holding_form(holdings: pd.DataFrame, row: pd.Series | None, key_prefix: str) -> None:
@@ -440,6 +490,7 @@ def render_mobile_holding_form(holdings: pd.DataFrame, row: pd.Series | None, ke
     row = pd.Series(dtype=object) if row is None else row
     asset_value = normalize_sub_asset_class(row.get("세부자산군", row.get("자산군", "ETF")) or "ETF")
     market_value = infer_market(asset_value, row.get("시장", "US"))
+    resolved_name_key = f"mh_resolved_name_{key_prefix}"
     with st.form(f"mobile_holding_form_{key_prefix}"):
         sub_asset = st.selectbox("세부자산군", ASSET_CLASSES, index=safe_index(ASSET_CLASSES, asset_value), key=f"mh_asset_{key_prefix}")
         major_asset = infer_major_asset_class(sub_asset)
@@ -447,7 +498,7 @@ def render_mobile_holding_form(holdings: pd.DataFrame, row: pd.Series | None, ke
         market = st.selectbox("시장", MARKETS, index=safe_index(MARKETS, market_value), key=f"mh_market_{key_prefix}")
         symbol = st.text_input("티커_또는_종목코드", value=str(row.get("티커 또는 종목코드", "") or ""), key=f"mh_symbol_{key_prefix}").strip().upper()
         currency = infer_currency(market, sub_asset, symbol)
-        name_default = str(row.get("종목명", "") or "") or resolve_security_name_fast(market, symbol, sub_asset)
+        name_default = st.session_state.get(resolved_name_key) or str(row.get("종목명", "") or "") or resolve_security_name_fast(market, symbol, sub_asset)
         name = st.text_input("종목명", value=name_default, key=f"mh_name_{key_prefix}")
         saebit_qty = st.text_input(
             "새빛_보유수량",
@@ -462,7 +513,16 @@ def render_mobile_holding_form(holdings: pd.DataFrame, row: pd.Series | None, ke
         avg_price = st.text_input("평균단가", value=format_number_for_display(row.get("평균단가", ""), 2), key=f"mh_avg_{key_prefix}")
         st.text_input("통화", value=currency, disabled=True, key=f"mh_currency_{key_prefix}")
         memo = st.text_area("메모", value=str(row.get("메모", "") or ""), key=f"mh_memo_{key_prefix}", height=80)
+        lookup_submitted = st.form_submit_button("종목명 조회", use_container_width=True)
         submitted = st.form_submit_button("자산 저장" if not is_new else "새 자산 저장", type="primary", use_container_width=True)
+    if lookup_submitted:
+        if not symbol:
+            st.warning("티커_또는_종목코드를 먼저 입력하세요.")
+            return
+        with st.spinner("종목명을 조회하는 중입니다."):
+            resolved_name = resolve_security_name_remote(market, symbol, sub_asset)
+        st.session_state[resolved_name_key] = resolved_name or symbol
+        st.rerun()
     if not submitted:
         return
     if not symbol:
@@ -475,7 +535,7 @@ def render_mobile_holding_form(holdings: pd.DataFrame, row: pd.Series | None, ke
             "세부자산군": sub_asset,
             "시장": market,
             "티커 또는 종목코드": symbol,
-            "종목명": name or resolve_security_name_fast(market, symbol, sub_asset) or symbol,
+            "종목명": name or st.session_state.get(resolved_name_key) or resolve_security_name_fast(market, symbol, sub_asset) or symbol,
             "새빛_보유수량": parse_number_from_display(saebit_qty) or 0,
             "희주_보유수량": parse_number_from_display(heeju_qty) or 0,
             "평균단가": parse_number_from_display(avg_price) or 0,
@@ -487,6 +547,7 @@ def render_mobile_holding_form(holdings: pd.DataFrame, row: pd.Series | None, ke
     db.write_table("holdings", updated)
     clear_cached_tables("holdings")
     st.session_state["mobile_holdings_message"] = "자산 데이터를 저장했습니다."
+    st.session_state.pop(resolved_name_key, None)
     st.rerun()
 
 
@@ -571,15 +632,7 @@ def show_mobile_bulk_buy() -> None:
 def show_mobile_capital_flows() -> None:
     st.markdown("### 원금")
     flows = normalize_capital_flows(load_table_cached("capital_flows"))
-    st.markdown(
-        f"""
-        <div class="app-card principal-card">
-          <div class="metric-label">현재 투자원금</div>
-          <div class="principal-value">{current_invested_principal(flows):,.0f}원</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.metric("현재 투자원금", f"{current_invested_principal(flows):,.0f}원")
     if st.session_state.pop("clear_mobile_capital_inputs", False):
         st.session_state["mobile_capital_amount_input"] = ""
         st.session_state["mobile_capital_memo_input"] = ""
@@ -1433,6 +1486,21 @@ def resolve_security_name_fast(market: str, symbol: str, sub_asset_class: str, n
     return ""
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def resolve_security_name_remote(market: str, symbol: str, sub_asset_class: str) -> str:
+    normalized_market = str(market or "").strip().upper()
+    normalized_symbol = normalize_symbol(normalized_market, symbol)
+    if not normalized_symbol:
+        return ""
+    fast = resolve_security_name_fast(normalized_market, normalized_symbol, sub_asset_class)
+    if fast:
+        return fast
+    try:
+        return get_security_name(normalized_market, normalized_symbol, sub_asset_class, sub_asset_class)
+    except Exception:
+        return normalized_symbol
+
+
 def dataframes_equal(left: pd.DataFrame, right: pd.DataFrame) -> bool:
     try:
         return left.reset_index(drop=True).fillna("").astype(str).equals(right.reset_index(drop=True).fillna("").astype(str))
@@ -1704,6 +1772,16 @@ def fetch_dashboard_benchmark(settings_values: dict[str, str]) -> tuple[float | 
         return None, f"벤치마크 조회 실패: {exc}"
 
 
+def benchmark_label(settings_values: dict[str, str]) -> str:
+    stock_symbol = settings_values.get("주식 벤치마크 티커", "VT") or "VT"
+    bond_symbol = settings_values.get("채권 벤치마크 티커", "BND") or "BND"
+    gold_symbol = settings_values.get("금 벤치마크 티커", "GLD") or "GLD"
+    stock_weight = parse_number(settings_values.get("주식 비중", "60"))
+    bond_weight = parse_number(settings_values.get("채권 비중", "30"))
+    gold_weight = parse_number(settings_values.get("금 비중", "10"))
+    return f"{stock_symbol} {stock_weight:.0f}% / {bond_symbol} {bond_weight:.0f}% / {gold_symbol} {gold_weight:.0f}%"
+
+
 def import_report_frame(report: dict[str, dict[str, object]]) -> pd.DataFrame:
     rows = []
     for table_name, values in report.items():
@@ -1729,7 +1807,7 @@ def apply_mobile_style() -> None:
     st.markdown(
         """
         <style>
-        .block-container { padding-top: 0.75rem; padding-bottom: 5.5rem; max-width: 980px; }
+        .block-container { padding-top: 0.5rem; padding-bottom: 5rem; max-width: 980px; }
         div[data-testid="stMetric"] {
             border: 1px solid #d7dde5;
             border-radius: 8px;
@@ -1745,44 +1823,15 @@ def apply_mobile_style() -> None:
             border: 1px solid #d7dde5;
             border-radius: 8px;
             background: #ffffff;
-            padding: 14px 16px;
-            margin: 8px 0;
+            padding: 10px 12px;
+            margin: 6px 0;
             box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
-        }
-        .metric-grid {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 8px;
-            margin: 8px 0 14px;
-        }
-        .metric-card { margin: 0; min-height: 82px; }
-        .metric-label {
-            color: #5f6b7a;
-            font-size: 0.78rem;
-            line-height: 1.25;
-            margin-bottom: 6px;
-        }
-        .metric-value {
-            color: #111827;
-            font-size: 1.05rem;
-            font-weight: 800;
-            line-height: 1.2;
-            word-break: keep-all;
         }
         .principal-value {
             font-size: 1.45rem;
             line-height: 1.2;
             color: #111827;
             font-weight: 850;
-        }
-        .holding-summary strong {
-            color: #111827;
-            font-size: 0.98rem;
-        }
-        .holding-summary span {
-            color: #4b5563;
-            font-size: 0.88rem;
-            line-height: 1.6;
         }
         div[role="radiogroup"] {
             gap: 4px;
@@ -1798,14 +1847,9 @@ def apply_mobile_style() -> None:
         .mobile-bottom-spacer { height: 2px; }
         @media (max-width: 700px) {
             .block-container { padding-left: 0.75rem; padding-right: 0.75rem; }
-            h1 { font-size: 1.55rem; }
-            h2, h3 { font-size: 1.2rem; }
-            .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-            .metric-value { font-size: 0.98rem; }
+            h1 { font-size: 1.35rem; margin-bottom: 0.25rem; }
+            h2, h3 { font-size: 1.05rem; }
             div[data-testid="stDataFrame"] { font-size: 0.82rem; }
-        }
-        @media (max-width: 380px) {
-            .metric-grid { grid-template-columns: 1fr; }
         }
         </style>
         """,

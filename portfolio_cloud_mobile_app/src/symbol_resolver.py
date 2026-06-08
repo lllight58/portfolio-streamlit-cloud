@@ -121,15 +121,15 @@ def get_kr_security_name(symbol: str) -> str:
     if normalized in KR_NAME_OVERRIDES:
         return KR_NAME_OVERRIDES[normalized]
 
+    name = _get_kr_name_from_naver(normalized)
+    if name:
+        return name
+
     name = _get_kr_name_from_fdr(normalized)
     if name:
         return name
 
     name = _get_kr_name_from_pykrx(normalized)
-    if name:
-        return name
-
-    name = _get_kr_name_from_naver(normalized)
     if name:
         return name
 
