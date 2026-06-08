@@ -1,0 +1,11 @@
+.env
+.streamlit/secrets.toml
+.venv/
+__pycache__/
+*.pyc
+*.log
+data/*.db
+data/*.sqlite
+exports/*.xlsx
+backups/*.db
+backups/*.xlsx
