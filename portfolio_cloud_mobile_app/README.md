@@ -59,6 +59,20 @@ portfolio_cloud_mobile_app/app.py
 https://your-portfolio-app.streamlit.app
 ```
 
+## 바로 반영하는 방법
+
+Streamlit Cloud는 GitHub에 올라간 코드만 재배포합니다. 로컬 파일을 수정한 것만으로는 배포 앱이 바뀌지 않습니다.
+
+이 폴더에는 배포 자동화 스크립트가 있습니다.
+
+```bat
+deploy_to_streamlit_cloud.bat "수정 내용 설명"
+```
+
+이 스크립트는 현재 `portfolio_cloud_mobile_app/` 내용을 GitHub 저장소
+`lllight58/portfolio-streamlit-cloud`의 `portfolio_cloud_mobile_app/` 폴더에 복사하고, 커밋 후 `master` 브랜치에 push합니다.
+Push가 끝나면 Streamlit Cloud가 자동으로 재배포합니다. 보통 반영까지 1-3분 정도 걸립니다.
+
 ## 4. Secrets에 Supabase 설정 넣기
 
 Streamlit Cloud에서는 `.env` 파일보다 Secrets를 사용합니다.
