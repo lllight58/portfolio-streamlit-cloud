@@ -5,6 +5,7 @@ import html
 import hashlib
 import hmac
 import time
+import tomllib
 from datetime import datetime
 from pathlib import Path
 
@@ -58,6 +59,7 @@ from src.symbol_resolver import get_security_name, normalize_symbol
 
 APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
+AUTH_CONFIG_PATH = APP_DIR / ".streamlit" / "auth.toml"
 DEFAULT_EXCEL_PATH = ROOT_DIR / "portfolio.xlsx"
 APP_TITLE = "포트폴리오"
 MOBILE_MENUS = ["홈", "자산", "매수", "원금", "가격", "공시", "설정"]
@@ -95,6 +97,11 @@ def get_secret_or_env(key: str, default: str = "") -> str:
         value = None
     if value is None or not str(value).strip():
         value = os.getenv(key, default)
+    if (value is None or not str(value).strip()) and AUTH_CONFIG_PATH.exists():
+        try:
+            value = tomllib.loads(AUTH_CONFIG_PATH.read_text(encoding="utf-8")).get(key, default)
+        except Exception:
+            value = default
     return str(value or default).strip()
 
 

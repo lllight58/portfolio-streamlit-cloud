@@ -102,11 +102,11 @@ OPENDART_API_KEY = ""
 SEC_USER_AGENT = "Personal Portfolio Disclosure Tracker your_email@example.com"
 ```
 
-`APP_PASSWORD`는 GitHub에 커밋하지 말고 Streamlit Cloud Secrets에만 입력하세요. 비밀번호 원문 대신 SHA-256 해시를 쓰려면 `APP_PASSWORD` 대신 `APP_PASSWORD_SHA256`에 해시값을 넣을 수 있습니다.
+`APP_PASSWORD`는 GitHub에 커밋하지 말고 Streamlit Cloud Secrets에만 입력하세요. 비밀번호 원문 대신 SHA-256 해시를 쓰려면 `APP_PASSWORD` 대신 `APP_PASSWORD_SHA256`에 해시값을 넣을 수 있습니다. 이 repo에는 운영 편의를 위해 `.streamlit/auth.toml`에 앱 접속 비밀번호의 SHA-256 해시만 저장합니다.
 
 ## 보안 설정
 
-이 앱은 앱 본문을 표시하기 전에 `APP_PASSWORD` 또는 `APP_PASSWORD_SHA256`으로 접근을 확인합니다. Secrets에 둘 중 하나가 없으면 앱은 열리지 않고 설정 안내만 표시합니다.
+이 앱은 앱 본문을 표시하기 전에 `APP_PASSWORD` 또는 `APP_PASSWORD_SHA256`으로 접근을 확인합니다. 값은 Streamlit Secrets, OS 환경변수, `.streamlit/auth.toml` 순서로 읽습니다. Secrets와 환경변수가 없어도 `.streamlit/auth.toml`의 해시로 앱 접속 비밀번호를 확인합니다.
 
 민감한 자산 데이터가 있는 운영 앱에서는 다음 설정을 같이 유지하세요.
 
