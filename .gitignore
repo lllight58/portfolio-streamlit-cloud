@@ -1,0 +1,19 @@
+.env
+.streamlit/secrets.toml
+.venv/
+__pycache__/
+*.pyc
+*.log
+
+# Local portfolio data and generated exports/backups
+portfolio.xlsx
+data/
+exports/
+backups/
+*.db
+*.sqlite
+*.xlsx
+
+# Keep templates and documentation trackable
+!.env.example
+!*.example

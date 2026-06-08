@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import html
+import hashlib
+import hmac
 import time
 from datetime import datetime
 from pathlib import Path
@@ -86,8 +88,54 @@ SYMBOL_NAME_CACHE = {
 st.set_page_config(page_title="포트폴리오", page_icon=str(APP_DIR / "assets" / "Yadon.ico"), layout="wide")
 
 
+def get_secret_or_env(key: str, default: str = "") -> str:
+    try:
+        value = st.secrets.get(key)
+    except Exception:
+        value = None
+    if value is None or not str(value).strip():
+        value = os.getenv(key, default)
+    return str(value or default).strip()
+
+
+def app_auth_required() -> bool:
+    value = get_secret_or_env("APP_AUTH_REQUIRED", "true").lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def verify_app_password(password: str) -> bool:
+    expected_hash = get_secret_or_env("APP_PASSWORD_SHA256")
+    if expected_hash:
+        submitted_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
+        return hmac.compare_digest(submitted_hash, expected_hash.lower())
+
+    expected_password = get_secret_or_env("APP_PASSWORD")
+    if expected_password:
+        return hmac.compare_digest(password, expected_password)
+    return False
+
+
+def require_app_authentication() -> None:
+    if not app_auth_required() or st.session_state.get("app_authenticated"):
+        return
+
+    st.title(APP_TITLE)
+    st.subheader("접근 인증")
+    password = st.text_input("비밀번호", type="password", key="app_password_input")
+    if st.button("로그인", type="primary", use_container_width=True):
+        if verify_app_password(password):
+            st.session_state["app_authenticated"] = True
+            st.rerun()
+        st.error("비밀번호가 올바르지 않습니다.")
+
+    if not get_secret_or_env("APP_PASSWORD") and not get_secret_or_env("APP_PASSWORD_SHA256"):
+        st.warning("Streamlit Secrets에 APP_PASSWORD 또는 APP_PASSWORD_SHA256을 먼저 설정해야 앱을 열 수 있습니다.")
+    st.stop()
+
+
 def main() -> None:
     apply_mobile_style()
+    require_app_authentication()
     st.title(APP_TITLE)
     init_error = None
     try:

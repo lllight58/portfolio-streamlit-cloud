@@ -95,10 +95,25 @@ SUPABASE_POOLER_DATABASE_URL = "postgresql://postgres.<PROJECT_REF>:<DB_PASSWORD
 DATABASE_URL = "postgresql://postgres.<PROJECT_REF>:<DB_PASSWORD>@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres"
 SUPABASE_DIRECT_DATABASE_URL = "postgresql://postgres:<DB_PASSWORD>@db.<PROJECT_REF>.supabase.co:5432/postgres"
 SUPABASE_PROJECT_URL = "https://<PROJECT_REF>.supabase.co"
+APP_AUTH_REQUIRED = "true"
+APP_PASSWORD = "앱 접속용 비밀번호"
 OPENAI_API_KEY = ""
 OPENDART_API_KEY = ""
 SEC_USER_AGENT = "Personal Portfolio Disclosure Tracker your_email@example.com"
 ```
+
+`APP_PASSWORD`는 GitHub에 커밋하지 말고 Streamlit Cloud Secrets에만 입력하세요. 비밀번호 원문 대신 SHA-256 해시를 쓰려면 `APP_PASSWORD` 대신 `APP_PASSWORD_SHA256`에 해시값을 넣을 수 있습니다.
+
+## 보안 설정
+
+이 앱은 앱 본문을 표시하기 전에 `APP_PASSWORD` 또는 `APP_PASSWORD_SHA256`으로 접근을 확인합니다. Secrets에 둘 중 하나가 없으면 앱은 열리지 않고 설정 안내만 표시합니다.
+
+민감한 자산 데이터가 있는 운영 앱에서는 다음 설정을 같이 유지하세요.
+
+1. GitHub 저장소를 Private으로 설정합니다.
+2. Streamlit Cloud App settings → Sharing에서 `Only specific people can view this app`을 선택합니다.
+3. Supabase URL, DB 비밀번호, API Key, 앱 비밀번호는 Streamlit Cloud Secrets에만 저장합니다.
+4. `portfolio.xlsx`, SQLite DB, exports, backups 파일은 GitHub에 올리지 않습니다.
 
 배포 후 앱의 `설정` 메뉴에서 다음을 확인합니다.
 
