@@ -61,6 +61,7 @@ APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
 AUTH_CONFIG_PATH = APP_DIR / ".streamlit" / "auth.toml"
 DEFAULT_APP_PASSWORD_SHA256 = "2e5d6f6f3e313e36af76bc79f63ebbd3bde25220121e430873d9504979f9307e"
+AUTH_VERSION = "auth-20260609-92837"
 DEFAULT_EXCEL_PATH = ROOT_DIR / "portfolio.xlsx"
 APP_TITLE = "포트폴리오"
 MOBILE_MENUS = ["홈", "자산", "매수", "원금", "가격", "공시", "설정"]
@@ -112,15 +113,8 @@ def app_auth_required() -> bool:
 
 
 def verify_app_password(password: str) -> bool:
-    expected_hash = get_secret_or_env("APP_PASSWORD_SHA256", DEFAULT_APP_PASSWORD_SHA256)
-    if expected_hash:
-        submitted_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
-        return hmac.compare_digest(submitted_hash, expected_hash.lower())
-
-    expected_password = get_secret_or_env("APP_PASSWORD")
-    if expected_password:
-        return hmac.compare_digest(password, expected_password)
-    return False
+    submitted_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
+    return hmac.compare_digest(submitted_hash, DEFAULT_APP_PASSWORD_SHA256)
 
 
 def require_app_authentication() -> None:
@@ -129,6 +123,7 @@ def require_app_authentication() -> None:
 
     st.title(APP_TITLE)
     st.subheader("접근 인증")
+    st.caption(AUTH_VERSION)
     password = st.text_input("비밀번호", type="password", key="app_password_input")
     if st.button("로그인", type="primary", use_container_width=True):
         if verify_app_password(password):
@@ -136,8 +131,6 @@ def require_app_authentication() -> None:
             st.rerun()
         st.error("비밀번호가 올바르지 않습니다.")
 
-    if not get_secret_or_env("APP_PASSWORD") and not get_secret_or_env("APP_PASSWORD_SHA256", DEFAULT_APP_PASSWORD_SHA256):
-        st.warning("Streamlit Secrets에 APP_PASSWORD 또는 APP_PASSWORD_SHA256을 먼저 설정해야 앱을 열 수 있습니다.")
     st.stop()
 
 
