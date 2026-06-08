@@ -58,7 +58,7 @@ APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
 DEFAULT_EXCEL_PATH = ROOT_DIR / "portfolio.xlsx"
 APP_TITLE = "포트폴리오"
-MOBILE_MENUS = ["홈", "자산", "매수", "원금", "공시", "설정"]
+MOBILE_MENUS = ["홈", "자산", "매수", "원금", "가격", "공시", "설정"]
 DESKTOP_MENUS = ["대시보드", "자산 입력", "추가매수", "투자원금", "시세 업데이트", "주요 공시", "설정", "Excel 가져오기/내보내기"]
 QUANTITY_COLUMNS = ["새빛_보유수량", "희주_보유수량", "합산_보유수량", "보유수량"]
 QUANTITY_RAW_PREFIX = "__raw_"
@@ -151,6 +151,8 @@ def render_mobile_menu(menu: str) -> None:
         show_mobile_bulk_buy()
     elif menu == "원금":
         show_mobile_capital_flows()
+    elif menu == "가격":
+        show_price_update()
     elif menu == "공시":
         show_disclosures()
     else:
