@@ -387,10 +387,7 @@ def show_mobile_dashboard() -> None:
 
     st.markdown("### 보유 종목")
     display_calculated = build_dashboard_holdings_table(calculated)
-    compact_columns = ["티커 또는 종목코드", "종목명", "평가금액", "전체 포트폴리오 내 비중", "수익률"]
-    compact = display_calculated[[column for column in compact_columns if column in display_calculated.columns]].copy()
-    compact = compact.rename(columns={"티커 또는 종목코드": "티커", "전체 포트폴리오 내 비중": "전체비중"})
-    st.dataframe(compact, use_container_width=True, hide_index=True)
+    render_mobile_colored_holdings_table(display_calculated)
     for _, row in display_calculated.iterrows():
         title = f"{row.get('티커 또는 종목코드', '')} | {row.get('종목명', '')}"
         with st.expander(title):
@@ -422,6 +419,46 @@ def render_mobile_metric_grid(metrics: list[tuple[str, str, object]]) -> None:
                 delta = value if str(value).strip() not in {"미조회", "-"} else None
             with column:
                 st.metric(label, value, delta=delta)
+
+
+def render_mobile_colored_holdings_table(df: pd.DataFrame) -> None:
+    if df.empty:
+        st.info("표시할 보유 종목 데이터가 없습니다.")
+        return
+
+    header_cells = "".join(f"<th>{label}</th>" for label in ["티커", "종목명", "평가금액", "전체비중", "수익률"])
+    body_rows = []
+    for _, row in df.iterrows():
+        asset_class = str(row.get("자산군", row.get("세부자산군", "")) or "")
+        bg = ASSET_CLASS_TABLE_BG_COLORS.get(asset_class, "rgba(255, 255, 255, 1)")
+        symbol = str(row.get("티커 또는 종목코드", "") or "")
+        values = [
+            symbol,
+            str(row.get("종목명", "") or ""),
+            str(row.get("평가금액", "") or ""),
+            str(row.get("전체 포트폴리오 내 비중", "") or ""),
+            str(row.get("수익률", "") or ""),
+        ]
+        cells = []
+        for label, value in zip(["티커", "종목명", "평가금액", "전체비중", "수익률"], values):
+            style = ""
+            align = "right" if label in {"평가금액", "전체비중", "수익률"} else "left"
+            if label == "수익률":
+                style = signed_value_style(row.get("수익률_numeric"))
+            cells.append(f"<td style='text-align:{align}; {style}'>{html.escape(value)}</td>")
+        body_rows.append(f"<tr style='background:{bg};'>{''.join(cells)}</tr>")
+
+    st.markdown(
+        f"""
+        <div class="mobile-holdings-table-wrap">
+          <table class="mobile-holdings-table mobile-compact-holdings-table">
+            <thead><tr>{header_cells}</tr></thead>
+            <tbody>{''.join(body_rows)}</tbody>
+          </table>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def show_mobile_holdings_editor() -> None:
@@ -485,44 +522,124 @@ def mobile_holding_labels(holdings: pd.DataFrame) -> dict[str, int]:
     return labels
 
 
+def initialize_mobile_holding_state(row: pd.Series, key_prefix: str, asset_value: str, market_value: str) -> None:
+    defaults = {
+        f"mh_asset_{key_prefix}": asset_value,
+        f"mh_market_{key_prefix}": market_value,
+        f"mh_symbol_{key_prefix}": str(row.get("티커 또는 종목코드", "") or ""),
+        f"mh_name_{key_prefix}": str(row.get("종목명", "") or ""),
+        f"mh_saebit_{key_prefix}": format_quantity_for_display(
+            row.get("새빛_보유수량", 0), asset_value, market_value, row.get("티커 또는 종목코드", "")
+        )
+        if not row.empty
+        else "",
+        f"mh_heeju_{key_prefix}": format_quantity_for_display(
+            row.get("희주_보유수량", 0), asset_value, market_value, row.get("티커 또는 종목코드", "")
+        )
+        if not row.empty
+        else "",
+        f"mh_avg_{key_prefix}": format_number_for_display(row.get("평균단가", ""), 2),
+        f"mh_memo_{key_prefix}": str(row.get("메모", "") or ""),
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def clear_mobile_holding_state(key_prefix: str) -> None:
+    prefixes = [
+        "mh_asset",
+        "mh_market",
+        "mh_symbol",
+        "mh_name",
+        "mh_saebit",
+        "mh_heeju",
+        "mh_avg",
+        "mh_memo",
+        "mh_currency",
+    ]
+    for prefix in prefixes:
+        st.session_state.pop(f"{prefix}_{key_prefix}", None)
+
+
+def on_mobile_holding_class_change(key_prefix: str) -> None:
+    sub_asset = st.session_state.get(f"mh_asset_{key_prefix}", "")
+    current_market = st.session_state.get(f"mh_market_{key_prefix}", "")
+    market = infer_market(sub_asset, current_market)
+    st.session_state[f"mh_market_{key_prefix}"] = market
+    symbol = st.session_state.get(f"mh_symbol_{key_prefix}", "")
+    st.session_state[f"mh_currency_{key_prefix}"] = infer_currency(market, sub_asset, symbol)
+
+
+def on_mobile_holding_market_change(key_prefix: str) -> None:
+    sub_asset = st.session_state.get(f"mh_asset_{key_prefix}", "")
+    market = st.session_state.get(f"mh_market_{key_prefix}", "")
+    symbol = normalize_symbol(market, st.session_state.get(f"mh_symbol_{key_prefix}", ""))
+    st.session_state[f"mh_symbol_{key_prefix}"] = symbol
+    st.session_state[f"mh_currency_{key_prefix}"] = infer_currency(market, sub_asset, symbol)
+
+
+def on_mobile_holding_symbol_change(key_prefix: str) -> None:
+    market = st.session_state.get(f"mh_market_{key_prefix}", "")
+    symbol = normalize_symbol(market, st.session_state.get(f"mh_symbol_{key_prefix}", ""))
+    st.session_state[f"mh_symbol_{key_prefix}"] = symbol
+    lookup_mobile_holding_name(key_prefix)
+
+
+def lookup_mobile_holding_name(key_prefix: str) -> None:
+    sub_asset = st.session_state.get(f"mh_asset_{key_prefix}", "")
+    market = st.session_state.get(f"mh_market_{key_prefix}", "")
+    symbol = normalize_symbol(market, st.session_state.get(f"mh_symbol_{key_prefix}", ""))
+    if not symbol:
+        st.session_state[f"mh_name_{key_prefix}"] = ""
+        return
+    resolved_name = resolve_security_name_remote(market, symbol, sub_asset)
+    if not resolved_name or resolved_name == symbol:
+        resolved_name = "종목명이 검색되지 않습니다"
+    st.session_state[f"mh_name_{key_prefix}"] = resolved_name
+
+
 def render_mobile_holding_form(holdings: pd.DataFrame, row: pd.Series | None, key_prefix: str) -> None:
     is_new = row is None
     row = pd.Series(dtype=object) if row is None else row
     asset_value = normalize_sub_asset_class(row.get("세부자산군", row.get("자산군", "ETF")) or "ETF")
     market_value = infer_market(asset_value, row.get("시장", "US"))
-    resolved_name_key = f"mh_resolved_name_{key_prefix}"
-    with st.form(f"mobile_holding_form_{key_prefix}"):
-        sub_asset = st.selectbox("세부자산군", ASSET_CLASSES, index=safe_index(ASSET_CLASSES, asset_value), key=f"mh_asset_{key_prefix}")
-        major_asset = infer_major_asset_class(sub_asset)
-        st.text_input("상위자산군", value=major_asset, disabled=True, key=f"mh_major_{key_prefix}")
-        market = st.selectbox("시장", MARKETS, index=safe_index(MARKETS, market_value), key=f"mh_market_{key_prefix}")
-        symbol = st.text_input("티커_또는_종목코드", value=str(row.get("티커 또는 종목코드", "") or ""), key=f"mh_symbol_{key_prefix}").strip().upper()
-        currency = infer_currency(market, sub_asset, symbol)
-        name_default = st.session_state.get(resolved_name_key) or str(row.get("종목명", "") or "") or resolve_security_name_fast(market, symbol, sub_asset)
-        name = st.text_input("종목명", value=name_default, key=f"mh_name_{key_prefix}")
-        saebit_qty = st.text_input(
-            "새빛_보유수량",
-            value=format_quantity_for_display(row.get("새빛_보유수량", 0), sub_asset, market, symbol) if not is_new else "",
-            key=f"mh_saebit_{key_prefix}",
-        )
-        heeju_qty = st.text_input(
-            "희주_보유수량",
-            value=format_quantity_for_display(row.get("희주_보유수량", 0), sub_asset, market, symbol) if not is_new else "",
-            key=f"mh_heeju_{key_prefix}",
-        )
-        avg_price = st.text_input("평균단가", value=format_number_for_display(row.get("평균단가", ""), 2), key=f"mh_avg_{key_prefix}")
-        st.text_input("통화", value=currency, disabled=True, key=f"mh_currency_{key_prefix}")
-        memo = st.text_area("메모", value=str(row.get("메모", "") or ""), key=f"mh_memo_{key_prefix}", height=80)
-        lookup_submitted = st.form_submit_button("종목명 조회", use_container_width=True)
-        submitted = st.form_submit_button("자산 저장" if not is_new else "새 자산 저장", type="primary", use_container_width=True)
-    if lookup_submitted:
-        if not symbol:
-            st.warning("티커_또는_종목코드를 먼저 입력하세요.")
-            return
-        with st.spinner("종목명을 조회하는 중입니다."):
-            resolved_name = resolve_security_name_remote(market, symbol, sub_asset)
-        st.session_state[resolved_name_key] = resolved_name or symbol
+    initialize_mobile_holding_state(row, key_prefix, asset_value, market_value)
+    sub_asset = st.selectbox(
+        "세부자산군",
+        ASSET_CLASSES,
+        index=safe_index(ASSET_CLASSES, st.session_state.get(f"mh_asset_{key_prefix}", asset_value)),
+        key=f"mh_asset_{key_prefix}",
+        on_change=on_mobile_holding_class_change,
+        args=(key_prefix,),
+    )
+    st.text_input("상위자산군", value=infer_major_asset_class(sub_asset), disabled=True, key=f"mh_major_display_{key_prefix}")
+    market = st.selectbox(
+        "시장",
+        MARKETS,
+        index=safe_index(MARKETS, st.session_state.get(f"mh_market_{key_prefix}", market_value)),
+        key=f"mh_market_{key_prefix}",
+        on_change=on_mobile_holding_market_change,
+        args=(key_prefix,),
+    )
+    symbol = st.text_input(
+        "티커_또는_종목코드",
+        key=f"mh_symbol_{key_prefix}",
+        on_change=on_mobile_holding_symbol_change,
+        args=(key_prefix,),
+    ).strip().upper()
+    currency = infer_currency(market, sub_asset, symbol)
+    st.session_state[f"mh_currency_{key_prefix}"] = currency
+    name = st.text_input("종목명", key=f"mh_name_{key_prefix}")
+    st.text_input("통화", value=currency, disabled=True, key=f"mh_currency_display_{key_prefix}")
+    saebit_qty = st.text_input("새빛_보유수량", key=f"mh_saebit_{key_prefix}")
+    heeju_qty = st.text_input("희주_보유수량", key=f"mh_heeju_{key_prefix}")
+    avg_price = st.text_input("평균단가", key=f"mh_avg_{key_prefix}")
+    memo = st.text_area("메모", key=f"mh_memo_{key_prefix}", height=80)
+    if st.button("종목명 다시 조회", key=f"mh_lookup_{key_prefix}", use_container_width=True):
+        lookup_mobile_holding_name(key_prefix)
         st.rerun()
+    submitted = st.button("자산 저장" if not is_new else "새 자산 저장", key=f"mh_save_{key_prefix}", type="primary", use_container_width=True)
     if not submitted:
         return
     if not symbol:
@@ -535,7 +652,7 @@ def render_mobile_holding_form(holdings: pd.DataFrame, row: pd.Series | None, ke
             "세부자산군": sub_asset,
             "시장": market,
             "티커 또는 종목코드": symbol,
-            "종목명": name or st.session_state.get(resolved_name_key) or resolve_security_name_fast(market, symbol, sub_asset) or symbol,
+            "종목명": name or "종목명이 검색되지 않습니다",
             "새빛_보유수량": parse_number_from_display(saebit_qty) or 0,
             "희주_보유수량": parse_number_from_display(heeju_qty) or 0,
             "평균단가": parse_number_from_display(avg_price) or 0,
@@ -547,7 +664,7 @@ def render_mobile_holding_form(holdings: pd.DataFrame, row: pd.Series | None, ke
     db.write_table("holdings", updated)
     clear_cached_tables("holdings")
     st.session_state["mobile_holdings_message"] = "자산 데이터를 저장했습니다."
-    st.session_state.pop(resolved_name_key, None)
+    clear_mobile_holding_state(key_prefix)
     st.rerun()
 
 
@@ -1847,6 +1964,31 @@ def apply_mobile_style() -> None:
             padding: 7px 9px;
             background: #fff;
             justify-content: center;
+        }
+        .mobile-holdings-table-wrap {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            margin-top: 0.5rem;
+        }
+        .mobile-holdings-table {
+            border-collapse: collapse;
+            width: 100%;
+            min-width: 560px;
+            font-size: 12px;
+        }
+        .mobile-holdings-table th {
+            background: #f4f6f8;
+            color: #1f2937;
+            font-weight: 700;
+            border: 1px solid #d7dde5;
+            padding: 7px 8px;
+            white-space: nowrap;
+        }
+        .mobile-holdings-table td {
+            border: 1px solid #d7dde5;
+            padding: 7px 8px;
+            color: #222;
+            white-space: nowrap;
         }
         .mobile-bottom-spacer { height: 2px; }
         @media (max-width: 700px) {

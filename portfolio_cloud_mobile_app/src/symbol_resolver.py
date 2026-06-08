@@ -125,14 +125,6 @@ def get_kr_security_name(symbol: str) -> str:
     if name:
         return name
 
-    name = _get_kr_name_from_fdr(normalized)
-    if name:
-        return name
-
-    name = _get_kr_name_from_pykrx(normalized)
-    if name:
-        return name
-
     return normalized
 
 
