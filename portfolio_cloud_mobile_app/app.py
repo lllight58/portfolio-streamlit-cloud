@@ -654,7 +654,9 @@ def show_mobile_capital_flows() -> None:
     if flows.empty:
         st.info("투자원금 기록이 없습니다.")
         return
-    for idx, row in flows.sort_index(ascending=False).iterrows():
+    recent_flows = flows.tail(5).sort_index(ascending=False)
+    st.caption("최근 5개 기록만 표시합니다.")
+    for idx, row in recent_flows.iterrows():
         with st.container(border=True):
             st.write(f"{row.get('일시', '')} · {row.get('유형', '')}")
             st.write(f"{format_integer_amount(row.get('금액'))}원")
@@ -1025,7 +1027,9 @@ def render_capital_flow_delete_controls(flows: pd.DataFrame) -> None:
         st.info("삭제할 투자원금 기록이 없습니다.")
         return
 
-    label_to_index = capital_flow_selector_map(normalized)
+    recent = normalized.tail(5)
+    st.caption("삭제 목록에는 최근 5개 기록만 표시합니다.")
+    label_to_index = capital_flow_selector_map(recent)
     selected_label = st.selectbox("삭제할 투자원금 기록 선택", [""] + list(label_to_index.keys()), key="delete_capital_flow_label")
     if st.button("선택 기록 삭제", use_container_width=True, disabled=not selected_label):
         st.session_state["pending_delete_capital_flow_label"] = selected_label
