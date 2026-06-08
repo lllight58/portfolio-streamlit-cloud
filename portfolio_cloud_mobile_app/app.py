@@ -60,6 +60,7 @@ from src.symbol_resolver import get_security_name, normalize_symbol
 APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
 AUTH_CONFIG_PATH = APP_DIR / ".streamlit" / "auth.toml"
+DEFAULT_APP_PASSWORD_SHA256 = "2e5d6f6f3e313e36af76bc79f63ebbd3bde25220121e430873d9504979f9307e"
 DEFAULT_EXCEL_PATH = ROOT_DIR / "portfolio.xlsx"
 APP_TITLE = "포트폴리오"
 MOBILE_MENUS = ["홈", "자산", "매수", "원금", "가격", "공시", "설정"]
@@ -111,7 +112,7 @@ def app_auth_required() -> bool:
 
 
 def verify_app_password(password: str) -> bool:
-    expected_hash = get_secret_or_env("APP_PASSWORD_SHA256")
+    expected_hash = get_secret_or_env("APP_PASSWORD_SHA256", DEFAULT_APP_PASSWORD_SHA256)
     if expected_hash:
         submitted_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
         return hmac.compare_digest(submitted_hash, expected_hash.lower())
@@ -135,7 +136,7 @@ def require_app_authentication() -> None:
             st.rerun()
         st.error("비밀번호가 올바르지 않습니다.")
 
-    if not get_secret_or_env("APP_PASSWORD") and not get_secret_or_env("APP_PASSWORD_SHA256"):
+    if not get_secret_or_env("APP_PASSWORD") and not get_secret_or_env("APP_PASSWORD_SHA256", DEFAULT_APP_PASSWORD_SHA256):
         st.warning("Streamlit Secrets에 APP_PASSWORD 또는 APP_PASSWORD_SHA256을 먼저 설정해야 앱을 열 수 있습니다.")
     st.stop()
 
