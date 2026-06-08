@@ -272,7 +272,7 @@ def show_dashboard() -> None:
     profit = total_value - principal
     return_rate = (profit / principal) if principal else 0.0
     snapshot_started = time.perf_counter()
-    yearly_return = calculate_this_year_return(load_table_cached("portfolio_snapshots"), total_value)
+    yearly_return = calculate_this_year_return(load_table_cached("portfolio_snapshots"), total_value, return_rate)
     perf.append(("스냅샷 조회", time.perf_counter() - snapshot_started))
     benchmark_return = st.session_state.get("benchmark_return")
     benchmark_error = st.session_state.get("benchmark_error")
@@ -295,6 +295,7 @@ def show_dashboard() -> None:
         with st.spinner("벤치마크 수익률을 조회하는 중입니다."):
             st.session_state["benchmark_return"], st.session_state["benchmark_error"] = fetch_dashboard_benchmark(settings_values)
         st.rerun()
+    render_return_history_section(load_table_cached("portfolio_snapshots"), total_value, return_rate, settings_values)
 
     if calculated.empty:
         st.info("자산 데이터가 없습니다. Excel 가져오기 또는 자산 입력에서 데이터를 추가하세요.")
@@ -334,7 +335,7 @@ def show_mobile_dashboard() -> None:
     total_value = float(calculated["원화 환산 평가금액"].sum()) if "원화 환산 평가금액" in calculated.columns else 0.0
     profit = total_value - principal
     return_rate = (profit / principal) if principal else 0.0
-    yearly_return = calculate_this_year_return(snapshots, total_value)
+    yearly_return = calculate_this_year_return(snapshots, total_value, return_rate)
     saebit_value = float(calculated.get("새빛_평가금액", pd.Series(dtype=float)).sum())
     heeju_value = float(calculated.get("희주_평가금액", pd.Series(dtype=float)).sum())
     benchmark_return = st.session_state.get("benchmark_return")
@@ -360,6 +361,7 @@ def show_mobile_dashboard() -> None:
         with st.spinner("벤치마크 수익률을 조회하는 중입니다."):
             st.session_state["benchmark_return"], st.session_state["benchmark_error"] = fetch_dashboard_benchmark(settings_values)
         st.rerun()
+    render_return_history_section(snapshots, total_value, return_rate, settings_values)
 
     if calculated.empty:
         st.info("자산 데이터가 없습니다. 자산 메뉴 또는 Excel 업로드로 데이터를 추가하세요.")
@@ -1872,13 +1874,15 @@ def format_krw(value) -> str:
     return f"{parse_number(value):,.0f}원"
 
 
-def calculate_this_year_return(snapshots: pd.DataFrame, current_value: float) -> float:
+def calculate_this_year_return(snapshots: pd.DataFrame, current_value: float, cumulative_return: float = 0.0) -> float:
+    current_year = datetime.now().year
+    if current_year <= 2026:
+        return cumulative_return
     if snapshots is None or snapshots.empty:
         return 0.0
     data = snapshots.copy()
     if "연도" not in data.columns or "총평가금액" not in data.columns:
         return 0.0
-    current_year = datetime.now().year
     data["연도"] = data["연도"].map(parse_number).astype(int)
     year_rows = data[data["연도"] == current_year].copy()
     if year_rows.empty:
@@ -1889,6 +1893,126 @@ def calculate_this_year_return(snapshots: pd.DataFrame, current_value: float) ->
     if start_value <= 0:
         return 0.0
     return (current_value - start_value) / start_value
+
+
+def render_return_history_section(
+    snapshots: pd.DataFrame,
+    current_value: float,
+    cumulative_return: float,
+    settings_values: dict[str, str],
+) -> None:
+    if st.button("누적수익률 상세 보기", use_container_width=True):
+        st.session_state["show_return_history"] = not st.session_state.get("show_return_history", False)
+    if not st.session_state.get("show_return_history", False):
+        return
+    with st.spinner("연도별 수익률을 계산하는 중입니다."):
+        history = build_return_history_table(snapshots, current_value, cumulative_return, settings_values)
+    st.dataframe(history, use_container_width=True, hide_index=True)
+
+
+def build_return_history_table(
+    snapshots: pd.DataFrame,
+    current_value: float,
+    cumulative_return: float,
+    settings_values: dict[str, str],
+) -> pd.DataFrame:
+    current_year = datetime.now().year
+    years = list(range(2026, current_year + 1))
+    portfolio_returns = annual_portfolio_returns(snapshots, current_value, cumulative_return, years)
+    benchmark_returns = annual_benchmark_returns_cached(
+        tuple(years),
+        settings_values.get("주식 벤치마크 티커", "VT") or "VT",
+        settings_values.get("채권 벤치마크 티커", "BND") or "BND",
+        settings_values.get("금 벤치마크 티커", "GLD") or "GLD",
+        parse_number(settings_values.get("주식 비중", "60")) / 100,
+        parse_number(settings_values.get("채권 비중", "30")) / 100,
+        parse_number(settings_values.get("금 비중", "10")) / 100,
+    )
+    rows = []
+    cumulative_benchmark = 1.0
+    has_benchmark = False
+    for year in years:
+        benchmark = benchmark_returns.get(year)
+        if benchmark is not None:
+            cumulative_benchmark *= 1 + benchmark
+            has_benchmark = True
+        rows.append(
+            {
+                "구분": str(year),
+                "포트폴리오 수익률": format_percent(portfolio_returns.get(year)),
+                "벤치마크 수익률": format_percent(benchmark) if benchmark is not None else "미조회",
+            }
+        )
+    rows.append(
+        {
+            "구분": "누적",
+            "포트폴리오 수익률": format_percent(cumulative_return),
+            "벤치마크 수익률": format_percent(cumulative_benchmark - 1) if has_benchmark else "미조회",
+        }
+    )
+    return pd.DataFrame(rows)
+
+
+def annual_portfolio_returns(
+    snapshots: pd.DataFrame,
+    current_value: float,
+    cumulative_return: float,
+    years: list[int],
+) -> dict[int, float]:
+    returns: dict[int, float] = {}
+    for year in years:
+        if year <= 2026:
+            returns[year] = cumulative_return
+            continue
+        returns[year] = calculate_year_return_from_snapshots(snapshots, year, current_value)
+    return returns
+
+
+def calculate_year_return_from_snapshots(snapshots: pd.DataFrame, year: int, current_value: float) -> float:
+    if snapshots is None or snapshots.empty:
+        return 0.0
+    if "연도" not in snapshots.columns or "총평가금액" not in snapshots.columns:
+        return 0.0
+    data = snapshots.copy()
+    data["연도"] = data["연도"].map(parse_number).astype(int)
+    year_rows = data[data["연도"] == year].copy()
+    if year_rows.empty:
+        return 0.0
+    if "날짜시간" in year_rows.columns:
+        year_rows = year_rows.sort_values("날짜시간")
+    start_value = parse_number(year_rows.iloc[0].get("총평가금액", 0))
+    if start_value <= 0:
+        return 0.0
+    if year == datetime.now().year:
+        end_value = current_value
+    else:
+        end_value = parse_number(year_rows.iloc[-1].get("총평가금액", 0))
+    return (end_value - start_value) / start_value if end_value > 0 else 0.0
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def annual_benchmark_returns_cached(
+    years: tuple[int, ...],
+    stock_symbol: str,
+    bond_symbol: str,
+    gold_symbol: str,
+    stock_weight: float,
+    bond_weight: float,
+    gold_weight: float,
+) -> dict[int, float | None]:
+    returns: dict[int, float | None] = {}
+    for year in years:
+        value, _ = fetch_benchmark_return(
+            stock_symbol,
+            bond_symbol,
+            gold_symbol,
+            stock_weight,
+            bond_weight,
+            gold_weight,
+            year=year,
+        )
+        returns[year] = value
+    return returns
 
 
 def fetch_dashboard_benchmark(settings_values: dict[str, str]) -> tuple[float | None, str | None]:
