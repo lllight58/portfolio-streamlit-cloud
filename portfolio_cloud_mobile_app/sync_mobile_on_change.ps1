@@ -65,12 +65,11 @@ $action = {
     Write-SyncLog "Detected change: $($Event.SourceEventArgs.ChangeType) $($Event.SourceEventArgs.FullPath)"
 }
 
-$registrations = @(
-    Register-ObjectEvent $watcher Changed -Action $action,
-    Register-ObjectEvent $watcher Created -Action $action,
-    Register-ObjectEvent $watcher Deleted -Action $action,
-    Register-ObjectEvent $watcher Renamed -Action $action
-)
+$registrations = @()
+$registrations += Register-ObjectEvent -InputObject $watcher -EventName Changed -Action $action
+$registrations += Register-ObjectEvent -InputObject $watcher -EventName Created -Action $action
+$registrations += Register-ObjectEvent -InputObject $watcher -EventName Deleted -Action $action
+$registrations += Register-ObjectEvent -InputObject $watcher -EventName Renamed -Action $action
 
 Write-SyncLog "Mobile auto-sync watcher started for $AppDir"
 
