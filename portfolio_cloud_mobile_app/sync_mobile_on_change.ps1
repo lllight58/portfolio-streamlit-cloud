@@ -46,9 +46,11 @@ function Test-IgnoredPath {
     return $ignoredNames -contains [System.IO.Path]::GetFileName($relative)
 }
 
-$script:lastChange = Get-Date
-$script:pending = $false
-$script:deploying = $false
+$state = [hashtable]::Synchronized(@{
+    LastChange = Get-Date
+    Pending = $false
+    Deploying = $false
+})
 
 $watcher = New-Object System.IO.FileSystemWatcher
 $watcher.Path = $AppDir
@@ -57,45 +59,66 @@ $watcher.NotifyFilter = [System.IO.NotifyFilters]'FileName, DirectoryName, LastW
 $watcher.EnableRaisingEvents = $true
 
 $action = {
+    $state = $Event.MessageData
     if (Test-IgnoredPath -Path $Event.SourceEventArgs.FullPath) {
         return
     }
-    $script:lastChange = Get-Date
-    $script:pending = $true
+    $state.LastChange = Get-Date
+    $state.Pending = $true
     Write-SyncLog "Detected change: $($Event.SourceEventArgs.ChangeType) $($Event.SourceEventArgs.FullPath)"
 }
 
 $registrations = @()
-$registrations += Register-ObjectEvent -InputObject $watcher -EventName Changed -Action $action
-$registrations += Register-ObjectEvent -InputObject $watcher -EventName Created -Action $action
-$registrations += Register-ObjectEvent -InputObject $watcher -EventName Deleted -Action $action
-$registrations += Register-ObjectEvent -InputObject $watcher -EventName Renamed -Action $action
+$registrations += Register-ObjectEvent -InputObject $watcher -EventName Changed -MessageData $state -Action $action
+$registrations += Register-ObjectEvent -InputObject $watcher -EventName Created -MessageData $state -Action $action
+$registrations += Register-ObjectEvent -InputObject $watcher -EventName Deleted -MessageData $state -Action $action
+$registrations += Register-ObjectEvent -InputObject $watcher -EventName Renamed -MessageData $state -Action $action
 
 Write-SyncLog "Mobile auto-sync watcher started for $AppDir"
 
 try {
     while ($true) {
         Start-Sleep -Seconds 2
-        if (-not $script:pending -or $script:deploying) {
+        if (-not $state.Pending -or $state.Deploying) {
             continue
         }
-        $elapsed = (New-TimeSpan -Start $script:lastChange -End (Get-Date)).TotalSeconds
+        $elapsed = (New-TimeSpan -Start $state.LastChange -End (Get-Date)).TotalSeconds
         if ($elapsed -lt $DebounceSeconds) {
             continue
         }
-        $script:pending = $false
-        $script:deploying = $true
+        $state.Pending = $false
+        $state.Deploying = $true
         try {
             $message = "$MessagePrefix $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
             Write-SyncLog "Deploy started: $message"
-            & powershell -NoProfile -ExecutionPolicy Bypass -File $DeployScript -Message $message *>> $LogPath
+            $stdoutPath = Join-Path $env:TEMP "portfolio_mobile_sync_stdout.log"
+            $stderrPath = Join-Path $env:TEMP "portfolio_mobile_sync_stderr.log"
+            Remove-Item -Path $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+            $process = Start-Process `
+                -FilePath powershell.exe `
+                -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $DeployScript, "-Message", $message) `
+                -WorkingDirectory $AppDir `
+                -RedirectStandardOutput $stdoutPath `
+                -RedirectStandardError $stderrPath `
+                -NoNewWindow `
+                -PassThru `
+                -Wait
+            if (Test-Path $stdoutPath) {
+                Get-Content $stdoutPath -ErrorAction SilentlyContinue | Add-Content -Path $LogPath -Encoding UTF8
+            }
+            if (Test-Path $stderrPath) {
+                Get-Content $stderrPath -ErrorAction SilentlyContinue | Add-Content -Path $LogPath -Encoding UTF8
+            }
+            if ($process.ExitCode -ne 0) {
+                throw "Deploy process exited with code $($process.ExitCode)"
+            }
             Write-SyncLog "Deploy finished"
         }
         catch {
             Write-SyncLog "Deploy failed: $($_.Exception.Message)"
         }
         finally {
-            $script:deploying = $false
+            $state.Deploying = $false
         }
     }
 }
