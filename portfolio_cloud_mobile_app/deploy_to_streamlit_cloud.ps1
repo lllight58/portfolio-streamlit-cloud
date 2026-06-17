@@ -33,6 +33,9 @@ if ($LASTEXITCODE -gt 7) {
     throw "robocopy failed with exit code $LASTEXITCODE"
 }
 
+Remove-Item -Path (Join-Path $TargetDir "mobile_sync.pid") -Force -ErrorAction SilentlyContinue
+Remove-Item -Path (Join-Path $TargetDir "mobile_sync.log") -Force -ErrorAction SilentlyContinue
+
 $DeployInfo = [ordered]@{
     deployed_at_kst = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId((Get-Date), "Korea Standard Time").ToString("yyyy-MM-dd HH:mm:ss")
     message = $Message
