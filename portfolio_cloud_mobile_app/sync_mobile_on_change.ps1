@@ -96,7 +96,7 @@ try {
             Remove-Item -Path $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
             $process = Start-Process `
                 -FilePath powershell.exe `
-                -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $DeployScript, "-Message", $message) `
+                -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$DeployScript`"", "-Message", "`"$message`"") `
                 -WorkingDirectory $AppDir `
                 -RedirectStandardOutput $stdoutPath `
                 -RedirectStandardError $stderrPath `
