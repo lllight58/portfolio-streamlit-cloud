@@ -1,5 +1,5 @@
 ﻿{
-    "deployed_at_kst":  "2026-06-17 11:03:42",
-    "message":  "Fix and enable mobile auto sync watcher",
+    "deployed_at_kst":  "2026-06-17 11:04:01",
+    "message":  "Ignore local mobile sync runtime files",
     "streamlit_url":  "https://lllight58-portfolio-stream-portfolio-cloud-mobile-appapp-6nltfr.streamlit.app/"
 }

@@ -4,6 +4,7 @@
 __pycache__/
 *.pyc
 *.log
+mobile_sync.pid
 data/*.db
 data/*.sqlite
 exports/*.xlsx
