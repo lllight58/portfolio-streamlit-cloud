@@ -56,7 +56,7 @@ portfolio_cloud_mobile_app/app.py
 예:
 
 ```text
-https://your-portfolio-app.streamlit.app
+https://lllight58-portfolio-stream-portfolio-cloud-mobile-appapp-6nltfr.streamlit.app/
 ```
 
 ## 바로 반영하는 방법
@@ -72,6 +72,26 @@ deploy_to_streamlit_cloud.bat "수정 내용 설명"
 이 스크립트는 현재 `portfolio_cloud_mobile_app/` 내용을 GitHub 저장소
 `lllight58/portfolio-streamlit-cloud`의 `portfolio_cloud_mobile_app/` 폴더에 복사하고, 커밋 후 `master` 브랜치에 push합니다.
 Push가 끝나면 Streamlit Cloud가 자동으로 재배포합니다. 보통 반영까지 1-3분 정도 걸립니다.
+
+## PC 수정 내용을 모바일에 항상 반영하는 구조
+
+PC에서 Codex가 앱 코드를 고치면 모바일 앱도 같은 코드를 보려면 반드시 Streamlit Cloud 재배포가 필요합니다. 이 폴더에는 파일 변경을 감지해서 배포 스크립트를 자동 실행하는 watcher가 있습니다.
+
+자동 동기화 시작:
+
+```bat
+start_mobile_auto_sync.bat
+```
+
+자동 동기화 중지:
+
+```bat
+stop_mobile_auto_sync.bat
+```
+
+자동 동기화가 켜져 있으면 `app.py`, `src/`, `db/`, `.streamlit/`, `requirements.txt` 같은 앱 파일 변경 후 약 20초 동안 추가 변경이 없을 때 GitHub에 push하고 Streamlit Cloud 재배포를 요청합니다. 로그는 `mobile_sync.log`에 남습니다.
+
+Codex 작업 규칙은 `AGENTS.md`에 고정해 두었습니다. 앞으로 앱 변경 작업은 로컬 수정만으로 끝내지 않고 `deploy_to_streamlit_cloud.ps1` 실행까지 포함해야 합니다.
 
 ## 4. Secrets에 Supabase 설정 넣기
 

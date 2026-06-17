@@ -33,6 +33,14 @@ if ($LASTEXITCODE -gt 7) {
     throw "robocopy failed with exit code $LASTEXITCODE"
 }
 
+$DeployInfo = [ordered]@{
+    deployed_at_kst = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId((Get-Date), "Korea Standard Time").ToString("yyyy-MM-dd HH:mm:ss")
+    message = $Message
+    streamlit_url = "https://lllight58-portfolio-stream-portfolio-cloud-mobile-appapp-6nltfr.streamlit.app/"
+}
+$DeployInfoPath = Join-Path $TargetDir "deploy_info.json"
+$DeployInfo | ConvertTo-Json | Set-Content -Path $DeployInfoPath -Encoding UTF8
+
 & $Git -C $RepoDir config user.name "Portfolio User"
 & $Git -C $RepoDir config user.email "portfolio-user@example.com"
 
@@ -48,3 +56,4 @@ if (-not $Changes) {
 & $Git -C $RepoDir push origin master
 
 Write-Host "Pushed to GitHub. Streamlit Cloud will redeploy automatically."
+Write-Host "Mobile app URL: https://lllight58-portfolio-stream-portfolio-cloud-mobile-appapp-6nltfr.streamlit.app/"
