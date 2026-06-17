@@ -35,6 +35,7 @@ def apply_streamlit_secrets() -> None:
         "SUPABASE_POOLER_DATABASE_URL",
         "SUPABASE_DIRECT_DATABASE_URL",
         "SUPABASE_PROJECT_URL",
+        "APP_PASSWORD",
         "OPENAI_API_KEY",
         "OPENDART_API_KEY",
         "SEC_USER_AGENT",
@@ -93,6 +94,8 @@ TABLES = [
     "disclosure_watchlist",
     "settings",
 ]
+
+PUBLIC_API_ROLES = ("anon", "authenticated", "public")
 
 TABLE_NORMALIZERS: dict[str, Callable[[pd.DataFrame | None], pd.DataFrame]] = {
     "holdings": normalize_holdings,
@@ -380,6 +383,7 @@ def write_table_to_backend(table_name: str, df: pd.DataFrame | None, backend: st
             storage = storage.replace({"": None})
             storage = _with_timestamps(storage, replace=replace, backend=backend, existing_columns=None)
             storage.to_sql(table_name, engine, if_exists="replace", index=False)
+            _protect_supabase_table(engine, table_name)
             return
         storage = _to_existing_table_columns(table_name, normalized, backend, existing_columns)
         storage = storage.replace({"": None})
@@ -616,6 +620,15 @@ def run_supabase_schema(schema_path: Path | None = None) -> tuple[bool, str]:
             engine.dispose()
     except Exception as exc:
         return False, f"Supabase schema 실행 실패: {exc}"
+
+
+def _protect_supabase_table(engine, table_name: str) -> None:
+    _validate_table(table_name)
+    roles = ", ".join(PUBLIC_API_ROLES)
+    with engine.begin() as conn:
+        conn.exec_driver_sql(f'alter table "{table_name}" enable row level security')
+        conn.exec_driver_sql(f'revoke all on table "{table_name}" from {roles}')
+        conn.exec_driver_sql(f"revoke all on all sequences in schema public from {roles}")
 
 
 def get_engine_for_url(url: str):

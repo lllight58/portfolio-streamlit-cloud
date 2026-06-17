@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import os
 import html
-import hashlib
 import hmac
 import time
-import tomllib
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.express as px
@@ -59,9 +58,6 @@ from src.symbol_resolver import get_security_name, normalize_symbol
 
 APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
-AUTH_CONFIG_PATH = APP_DIR / ".streamlit" / "auth.toml"
-DEFAULT_APP_PASSWORD_SHA256 = "2e5d6f6f3e313e36af76bc79f63ebbd3bde25220121e430873d9504979f9307e"
-AUTH_VERSION = "auth-20260609-92837"
 DEFAULT_EXCEL_PATH = ROOT_DIR / "portfolio.xlsx"
 APP_TITLE = "포트폴리오"
 MOBILE_MENUS = ["홈", "자산", "매수", "원금", "가격", "공시", "설정"]
@@ -87,56 +83,17 @@ SYMBOL_NAME_CACHE = {
     "FX:USDKRW": "미국 달러 현금",
     "FX:USD": "미국 달러 현금",
 }
+APP_TIMEZONE = ZoneInfo("Asia/Seoul")
+UTC_TIMEZONE = ZoneInfo("UTC")
+DATA_CACHE_TTL_SECONDS = 1
 
 
 st.set_page_config(page_title="포트폴리오", page_icon=str(APP_DIR / "assets" / "Yadon.ico"), layout="wide")
 
 
-def get_secret_or_env(key: str, default: str = "") -> str:
-    try:
-        value = st.secrets.get(key)
-    except Exception:
-        value = None
-    if value is None or not str(value).strip():
-        value = os.getenv(key, default)
-    if (value is None or not str(value).strip()) and AUTH_CONFIG_PATH.exists():
-        try:
-            value = tomllib.loads(AUTH_CONFIG_PATH.read_text(encoding="utf-8")).get(key, default)
-        except Exception:
-            value = default
-    return str(value or default).strip()
-
-
-def app_auth_required() -> bool:
-    value = get_secret_or_env("APP_AUTH_REQUIRED", "true").lower()
-    return value not in {"0", "false", "no", "off"}
-
-
-def verify_app_password(password: str) -> bool:
-    submitted_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
-    return hmac.compare_digest(submitted_hash, DEFAULT_APP_PASSWORD_SHA256)
-
-
-def require_app_authentication() -> None:
-    if not app_auth_required() or st.session_state.get("app_authenticated"):
-        return
-
-    st.title(APP_TITLE)
-    st.subheader("접근 인증")
-    st.caption(AUTH_VERSION)
-    password = st.text_input("비밀번호", type="password", key="app_password_input")
-    if st.button("로그인", type="primary", use_container_width=True):
-        if verify_app_password(password):
-            st.session_state["app_authenticated"] = True
-            st.rerun()
-        st.error("비밀번호가 올바르지 않습니다.")
-
-    st.stop()
-
-
 def main() -> None:
     apply_mobile_style()
-    require_app_authentication()
+    require_app_password()
     st.title(APP_TITLE)
     init_error = None
     try:
@@ -208,6 +165,38 @@ def render_mobile_menu(menu: str) -> None:
         show_mobile_settings()
 
 
+def require_app_password() -> None:
+    expected_password = app_secret("APP_PASSWORD")
+    if not expected_password:
+        st.error("앱 입장 비밀번호가 설정되어 있지 않습니다.")
+        st.info("Streamlit Cloud Secrets 또는 로컬 .env에 APP_PASSWORD를 설정한 뒤 앱을 재시작하세요.")
+        st.stop()
+
+    if st.session_state.get("authenticated"):
+        return
+
+    st.title(APP_TITLE)
+    st.subheader("입장 비밀번호")
+    entered_password = st.text_input("비밀번호", type="password", label_visibility="collapsed")
+    if st.button("입장", type="primary", use_container_width=True):
+        if hmac.compare_digest(entered_password, expected_password):
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("비밀번호가 올바르지 않습니다.")
+    st.stop()
+
+
+def app_secret(key: str) -> str:
+    try:
+        value = st.secrets.get(key)
+    except Exception:
+        value = None
+    if value is not None and str(value).strip():
+        return str(value).strip()
+    return os.getenv(key, "").strip()
+
+
 def render_mobile_nav() -> str:
     selected = st.radio(
         "모바일 메뉴",
@@ -229,13 +218,13 @@ def load_core() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]
     return holdings, prices, capital_flows, calculated
 
 
-def load_mobile_dashboard_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, str], pd.DataFrame]:
+def load_mobile_dashboard_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, str], pd.DataFrame, pd.DataFrame]:
     tables = load_tables_cached(("holdings", "prices", "capital_flows", "settings", "portfolio_snapshots"))
     holdings = tables["holdings"]
     prices = tables["prices"]
     calculated = calculate_portfolio_cached(holdings, prices)
     settings_values = settings_to_dict(tables["settings"])
-    return calculated, tables["capital_flows"], tables["portfolio_snapshots"], settings_values, holdings
+    return calculated, tables["capital_flows"], tables["portfolio_snapshots"], settings_values, holdings, prices
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -244,22 +233,22 @@ def initialize_database_cached() -> bool:
     return True
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=DATA_CACHE_TTL_SECONDS, show_spinner=False)
 def load_table_cached(table_name: str) -> pd.DataFrame:
     return db.read_table(table_name)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=DATA_CACHE_TTL_SECONDS, show_spinner=False)
 def load_tables_cached(table_names: tuple[str, ...]) -> dict[str, pd.DataFrame]:
     return db.read_tables(table_names)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=DATA_CACHE_TTL_SECONDS, show_spinner=False)
 def calculate_portfolio_cached(holdings: pd.DataFrame, prices: pd.DataFrame) -> pd.DataFrame:
     return calculate_portfolio(holdings, prices)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=DATA_CACHE_TTL_SECONDS, show_spinner=False)
 def make_all_charts_cached(calculated: pd.DataFrame) -> dict:
     return make_all_charts(calculated)
 
@@ -381,7 +370,7 @@ def show_dashboard() -> None:
 
 
 def show_mobile_dashboard() -> None:
-    calculated, capital_flows, snapshots, settings_values, _ = load_mobile_dashboard_data()
+    calculated, capital_flows, snapshots, settings_values, _, prices = load_mobile_dashboard_data()
     principal = current_invested_principal(capital_flows)
     total_value = float(calculated["원화 환산 평가금액"].sum()) if "원화 환산 평가금액" in calculated.columns else 0.0
     profit = total_value - principal
@@ -393,7 +382,7 @@ def show_mobile_dashboard() -> None:
     benchmark_error = st.session_state.get("benchmark_error")
     benchmark_name = benchmark_label(settings_values)
 
-    st.markdown("### 홈")
+    render_home_title(prices)
     metrics = [
         ("총 평가금액", format_krw(total_value), None),
         ("투자원금", format_krw(principal), None),
@@ -460,6 +449,33 @@ def show_mobile_dashboard() -> None:
                 if column in row.index:
                     st.write(f"{column.replace('_표시', '')}: {row.get(column)}")
     render_performance_debug(settings_values, [])
+
+
+def render_home_title(prices: pd.DataFrame) -> None:
+    updated_at = latest_price_update_text(prices)
+    update_text = f"가격 업데이트: {updated_at}" if updated_at else "가격 업데이트: -"
+    st.markdown(f"**홈**  ·  {update_text}")
+
+
+def latest_price_update_text(prices: pd.DataFrame) -> str:
+    if prices is None or prices.empty or "마지막 가격 업데이트 시각" not in prices.columns:
+        return ""
+    values = prices["마지막 가격 업데이트 시각"].dropna().astype(str).str.strip()
+    values = values[values != ""]
+    if values.empty:
+        return ""
+    parsed_values = []
+    for value in values:
+        parsed = pd.to_datetime(value, errors="coerce")
+        if pd.isna(parsed):
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.tz_localize(UTC_TIMEZONE)
+        parsed_values.append(parsed.tz_convert(APP_TIMEZONE))
+    if parsed_values:
+        latest = max(parsed_values)
+        return latest.strftime("%Y-%m-%d %H:%M")
+    return values.iloc[-1]
 
 
 def render_mobile_metric_grid(metrics: list[tuple[str, str, object]]) -> None:
@@ -1417,6 +1433,7 @@ def show_settings() -> None:
         "SUPABASE_POOLER_DATABASE_URL",
         "SUPABASE_DIRECT_DATABASE_URL",
         "SUPABASE_PROJECT_URL",
+        "APP_PASSWORD",
         "OPENAI_API_KEY",
         "OPENDART_API_KEY",
         "SEC_USER_AGENT",
@@ -2115,6 +2132,11 @@ def apply_mobile_style() -> None:
         """
         <style>
         .block-container { padding-top: 0.5rem; padding-bottom: 5rem; max-width: 980px; }
+        h1 a, h2 a, h3 a, h4 a, h5 a, h6 a,
+        a.anchor-link {
+            display: none !important;
+            visibility: hidden !important;
+        }
         div[data-testid="stMetric"] {
             border: 1px solid #d7dde5;
             border-radius: 8px;

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -9,9 +10,11 @@ import yfinance as yf
 from src.formatters import infer_currency
 from src.symbol_resolver import crypto_yfinance_symbol, is_crypto_route, normalize_symbol
 
+APP_TIMEZONE = ZoneInfo("Asia/Seoul")
+
 
 def now_text() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(APP_TIMEZONE).isoformat(timespec="seconds")
 
 
 def fetch_all_prices(holdings: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:

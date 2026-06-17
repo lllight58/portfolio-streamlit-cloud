@@ -267,3 +267,31 @@ create index if not exists idx_transactions_account_symbol on transactions (acco
 create index if not exists idx_transactions_symbol on transactions (symbol);
 create index if not exists idx_transactions_account on transactions (account);
 create index if not exists idx_disclosures_symbol on disclosures (market, symbol);
+
+-- Protect tables exposed through the Supabase public API.
+-- The Streamlit app uses the PostgreSQL connection string, so enabling RLS
+-- and revoking API-role grants blocks anonymous REST access without changing
+-- the app's data flow.
+alter table holdings enable row level security;
+alter table prices enable row level security;
+alter table transactions enable row level security;
+alter table capital_flows enable row level security;
+alter table portfolio_snapshots enable row level security;
+alter table disclosures enable row level security;
+alter table disclosure_logs enable row level security;
+alter table disclosure_watchlist enable row level security;
+alter table settings enable row level security;
+
+revoke all on table holdings from anon, authenticated, public;
+revoke all on table prices from anon, authenticated, public;
+revoke all on table transactions from anon, authenticated, public;
+revoke all on table capital_flows from anon, authenticated, public;
+revoke all on table portfolio_snapshots from anon, authenticated, public;
+revoke all on table disclosures from anon, authenticated, public;
+revoke all on table disclosure_logs from anon, authenticated, public;
+revoke all on table disclosure_watchlist from anon, authenticated, public;
+revoke all on table settings from anon, authenticated, public;
+
+revoke all on all sequences in schema public from anon, authenticated, public;
+alter default privileges in schema public revoke all on tables from anon, authenticated, public;
+alter default privileges in schema public revoke all on sequences from anon, authenticated, public;
