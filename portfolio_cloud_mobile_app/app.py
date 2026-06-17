@@ -86,6 +86,7 @@ SYMBOL_NAME_CACHE = {
 APP_TIMEZONE = ZoneInfo("Asia/Seoul")
 UTC_TIMEZONE = ZoneInfo("UTC")
 DATA_CACHE_TTL_SECONDS = 1
+DEFAULT_APP_PASSWORD = "92837"
 
 
 st.set_page_config(page_title="포트폴리오", page_icon=str(APP_DIR / "assets" / "Yadon.ico"), layout="wide")
@@ -194,7 +195,12 @@ def app_secret(key: str) -> str:
         value = None
     if value is not None and str(value).strip():
         return str(value).strip()
-    return os.getenv(key, "").strip()
+    env_value = os.getenv(key, "").strip()
+    if env_value:
+        return env_value
+    if key == "APP_PASSWORD":
+        return DEFAULT_APP_PASSWORD
+    return ""
 
 
 def render_mobile_nav() -> str:
