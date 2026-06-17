@@ -27,7 +27,7 @@ if (-not (Test-Path $TargetDir)) {
 
 robocopy $AppDir $TargetDir /MIR `
     /XD ".git" ".venv" "__pycache__" "data" "backups" "exports" `
-    /XF ".env" "secrets.toml" "*.pyc" "*.log" | Out-Null
+    /XF ".env" "secrets.toml" "*.pyc" "*.log" "mobile_sync.pid" "mobile_sync.log" | Out-Null
 
 if ($LASTEXITCODE -gt 7) {
     throw "robocopy failed with exit code $LASTEXITCODE"
