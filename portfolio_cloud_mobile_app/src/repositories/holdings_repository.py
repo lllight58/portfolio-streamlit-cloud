@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import uuid4
 
 import pandas as pd
 
 from src import db
 from src.formatters import parse_number
-from src.portfolio_calculator import normalize_holdings
+from src.portfolio_calculator import infer_major_asset_class, normalize_holdings
 
 from .base_repository import DataFrameRepository
 
@@ -64,6 +65,27 @@ def delete_holdings_by_row_ids(row_ids: list[str]) -> int:
     remaining = _renumber_sort_order(remaining)
     db.write_table("holdings", remaining)
     return int(deleted_count)
+
+
+def upsert_holding_row(holdings: pd.DataFrame, row_id: str, values: dict[str, object]) -> tuple[pd.DataFrame, str]:
+    """Insert or update one holding using row_id as the stable identity."""
+    normalized = normalize_holdings(holdings)
+    target = _materialize_holding_values(values)
+    target_row_id = str(row_id or "").strip()
+    row_ids = normalized["row_id"].fillna("").astype(str)
+
+    if target_row_id and target_row_id in set(row_ids):
+        mask = row_ids == target_row_id
+        for column, value in target.items():
+            normalized.loc[mask, column] = value
+        saved_row_id = target_row_id
+    else:
+        next_order = int(normalized["표시순서"].map(parse_number).max() or 0) + 1 if not normalized.empty else 1
+        saved_row_id = f"mobile-{datetime.now():%Y%m%d%H%M%S%f}"
+        target.update({"표시순서": next_order, "sort_order": next_order, "row_id": saved_row_id})
+        normalized = pd.concat([normalized, pd.DataFrame([target])], ignore_index=True)
+
+    return normalize_holdings(normalized), saved_row_id
 
 
 def delete_holdings_by_selectors(selectors: list[dict]) -> int:
@@ -127,6 +149,20 @@ def update_holdings_sort_order(order_items: list[dict]) -> int:
         holdings = normalize_holdings(holdings)
         db.write_table("holdings", holdings)
     return int(updated)
+
+
+def _materialize_holding_values(values: dict[str, object]) -> dict[str, object]:
+    target = values.copy()
+    sub_asset_class = str(target.get("세부자산군", target.get("자산군", "")) or "")
+    target["세부자산군"] = sub_asset_class
+    target["상위자산군"] = infer_major_asset_class(sub_asset_class)
+    target["자산군"] = sub_asset_class
+    target["새빛_보유수량"] = parse_number(target.get("새빛_보유수량"))
+    target["희주_보유수량"] = parse_number(target.get("희주_보유수량"))
+    target["합산_보유수량"] = target["새빛_보유수량"] + target["희주_보유수량"]
+    target["보유수량"] = target["합산_보유수량"]
+    target["평균단가"] = parse_number(target.get("평균단가"))
+    return target
 
 
 def _renumber_sort_order(holdings: pd.DataFrame) -> pd.DataFrame:

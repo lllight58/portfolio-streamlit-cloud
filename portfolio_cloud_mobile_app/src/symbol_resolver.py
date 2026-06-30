@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import re
 
 import pandas as pd
@@ -43,6 +44,16 @@ FX_NAMES = {
 }
 
 
+@dataclass(frozen=True)
+class SecurityLookupResult:
+    market: str
+    symbol: str
+    name: str
+    success: bool
+    source: str
+    reason: str = ""
+
+
 def normalize_symbol(market: str, symbol: str) -> str:
     clean = re.sub(r"\s+", "", str(symbol or "")).upper()
     if str(market or "").upper() == "CRYPTO":
@@ -81,39 +92,127 @@ def is_crypto_route(market: str, asset_class: str | None = None, sub_asset_class
 
 
 def get_security_name(market: str, symbol: str, asset_class: str | None = None, sub_asset_class: str | None = None) -> str:
-    if is_crypto_route(market, asset_class, sub_asset_class):
+    result = lookup_security(market, symbol, asset_class, sub_asset_class)
+    return result.name if result.name else result.symbol
+
+
+def lookup_security(market: str, symbol: str, asset_class: str | None = None, sub_asset_class: str | None = None) -> SecurityLookupResult:
+    normalized_market = str(market or "").strip().upper()
+    if is_crypto_route(normalized_market, asset_class, sub_asset_class):
         normalized = normalize_crypto_symbol(symbol)
-        return get_crypto_security_name(normalized) if normalized else ""
-    normalized = normalize_symbol(market, symbol)
-    market = str(market or "").upper()
+        name = get_crypto_security_name(normalized) if normalized else ""
+        return SecurityLookupResult(normalized_market or "CRYPTO", normalized, name, bool(normalized), "coingecko/yfinance", "" if normalized else "empty_symbol")
+    normalized = normalize_symbol(normalized_market, symbol)
     if not normalized:
-        return ""
-    if market == "US":
-        return get_us_security_name(normalized)
-    if market == "KR":
-        return get_kr_security_name(normalized)
-    if market == "CRYPTO":
-        return get_crypto_security_name(normalized)
-    if market == "FX":
-        return get_fx_security_name(normalized)
-    return normalized
+        return SecurityLookupResult(normalized_market, "", "", False, "input", "empty_symbol")
+    if normalized_market == "US":
+        return lookup_us_security(normalized)
+    if normalized_market == "KR":
+        return lookup_kr_security(normalized)
+    if normalized_market == "CRYPTO":
+        name = get_crypto_security_name(normalized)
+        return SecurityLookupResult(normalized_market, normalized, name, bool(name), "coingecko/yfinance", "" if name else "not_found")
+    if normalized_market == "FX":
+        name = get_fx_security_name(normalized)
+        return SecurityLookupResult(normalized_market, normalized, name, bool(name), "static_fx_map", "" if name else "not_found")
+    return SecurityLookupResult(normalized_market, normalized, normalized, True, "normalized_input")
 
 
 def get_us_security_name(symbol: str) -> str:
+    result = lookup_us_security(symbol)
+    return result.name if result.name else result.symbol
+
+
+def lookup_us_security(symbol: str) -> SecurityLookupResult:
     normalized = normalize_symbol("US", symbol)
+    if not _is_valid_us_symbol_shape(normalized):
+        return SecurityLookupResult("US", normalized, "", False, "input", "invalid_us_symbol_shape")
+
+    exact = _lookup_yfinance_exact("US", normalized)
+    if exact.success:
+        return exact
+
+    search = _lookup_yahoo_search_exact("US", normalized)
+    if search.success:
+        return search
+
+    if exact.name:
+        return SecurityLookupResult("US", normalized, exact.name, True, exact.source, exact.reason)
+    return SecurityLookupResult("US", normalized, "", False, "yfinance_exact/yahoo_search", exact.reason or search.reason or "not_found")
+
+
+def lookup_kr_security(symbol: str) -> SecurityLookupResult:
+    normalized = normalize_symbol("KR", symbol)
+    candidates = [normalized]
+    if normalized.endswith((".KS", ".KQ")):
+        candidates.append(normalized.rsplit(".", 1)[0])
+
+    exact = _lookup_yfinance_exact("KR", normalized)
+    if exact.success:
+        return exact
+
+    for candidate in candidates:
+        name = get_kr_security_name(candidate)
+        if name and name != candidate:
+            return SecurityLookupResult("KR", normalized, name, True, "naver/krx")
+
+    if exact.name:
+        return SecurityLookupResult("KR", normalized, exact.name, True, exact.source, exact.reason)
+    return SecurityLookupResult("KR", normalized, "", False, "yfinance_exact/naver/krx", exact.reason or "not_found")
+
+
+def _is_valid_us_symbol_shape(symbol: str) -> bool:
+    return bool(re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", str(symbol or "")))
+
+
+def _lookup_yfinance_exact(market: str, symbol: str) -> SecurityLookupResult:
+    normalized = normalize_symbol(market, symbol)
     try:
         ticker = yf.Ticker(normalized)
         info = ticker.get_info() or {}
-        for key in ("longName", "shortName"):
-            value = info.get(key)
-            if value:
-                return str(value)
-        quote_type = info.get("quoteType")
-        if quote_type:
-            return f"{normalized} {quote_type}"
-    except Exception:
-        pass
-    return normalized
+        quote_symbol = str(info.get("symbol") or info.get("underlyingSymbol") or normalized).upper()
+        quote_type = str(info.get("quoteType") or "").strip()
+        name = str(info.get("longName") or info.get("shortName") or "").strip()
+        if quote_symbol == normalized and (name or quote_type):
+            return SecurityLookupResult(market, normalized, name or f"{normalized} {quote_type}", True, "yfinance_exact_quote")
+        if name or quote_type:
+            return SecurityLookupResult(market, normalized, name or f"{normalized} {quote_type}", False, "yfinance_exact_quote", "symbol_mismatch")
+    except Exception as exc:
+        return SecurityLookupResult(market, normalized, "", False, "yfinance_exact_quote", type(exc).__name__)
+
+    try:
+        history = yf.Ticker(normalized).history(period="5d", interval="1d")
+        if history is not None and not history.empty:
+            return SecurityLookupResult(market, normalized, normalized, True, "yfinance_exact_history", "metadata_name_missing")
+    except Exception as exc:
+        return SecurityLookupResult(market, normalized, "", False, "yfinance_exact_history", type(exc).__name__)
+    return SecurityLookupResult(market, normalized, "", False, "yfinance_exact_quote", "not_found")
+
+
+def _lookup_yahoo_search_exact(market: str, symbol: str) -> SecurityLookupResult:
+    normalized = normalize_symbol(market, symbol)
+    try:
+        response = requests.get(
+            "https://query1.finance.yahoo.com/v1/finance/search",
+            params={"q": normalized, "quotesCount": 10, "newsCount": 0},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=8,
+        )
+        response.raise_for_status()
+        data = response.json()
+        quotes = data.get("quotes", []) if isinstance(data, dict) else []
+        for item in quotes:
+            item_symbol = str(item.get("symbol") or "").upper()
+            exchange = str(item.get("exchDisp") or item.get("exchange") or "").upper()
+            if item_symbol != normalized:
+                continue
+            if market == "US" and any(token in exchange for token in ["KOREA", "KOSPI", "KOSDAQ"]):
+                continue
+            name = str(item.get("longname") or item.get("shortname") or item.get("name") or "").strip()
+            return SecurityLookupResult(market, normalized, name or normalized, True, "yahoo_search_exact")
+    except Exception as exc:
+        return SecurityLookupResult(market, normalized, "", False, "yahoo_search_exact", type(exc).__name__)
+    return SecurityLookupResult(market, normalized, "", False, "yahoo_search_exact", "not_found")
 
 
 def get_kr_security_name(symbol: str) -> str:

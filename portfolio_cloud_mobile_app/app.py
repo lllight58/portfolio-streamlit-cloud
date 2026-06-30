@@ -51,9 +51,10 @@ from src.repositories.holdings_repository import (
     delete_holdings_by_selectors,
     delete_holdings_by_row_ids,
     ensure_row_ids,
+    upsert_holding_row,
     update_holdings_sort_order,
 )
-from src.symbol_resolver import get_security_name, normalize_symbol
+from src.symbol_resolver import SecurityLookupResult, lookup_security, normalize_symbol
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -283,6 +284,11 @@ def clear_cached_tables(*table_names: str) -> None:
         make_all_charts_cached.clear()
     except Exception:
         pass
+
+
+def sync_after_holdings_mutation(*extra_tables: str) -> None:
+    clear_cached_tables("holdings", *extra_tables)
+    st.session_state.pop("holdings_editor_df", None)
 
 
 PLOTLY_CONFIG = {
@@ -550,7 +556,17 @@ def show_mobile_holdings_editor() -> None:
         return
 
     labels = mobile_holding_labels(holdings)
-    selected_label = st.selectbox("수정할 자산 선택", list(labels.keys()), key="mobile_selected_holding")
+    label_options = list(labels.keys())
+    selected_row_id = st.session_state.pop("mobile_selected_holding_row_id", "")
+    selected_index_value = 0
+    if selected_row_id:
+        for option_index, label in enumerate(label_options):
+            row_index = labels[label]
+            if str(holdings.loc[row_index].get("row_id", "") or "") == selected_row_id:
+                selected_index_value = option_index
+                st.session_state["mobile_selected_holding"] = label
+                break
+    selected_label = st.selectbox("수정할 자산 선택", label_options, index=selected_index_value, key="mobile_selected_holding")
     selected_index = labels.get(selected_label)
     if selected_index is not None:
         row = holdings.loc[selected_index]
@@ -573,7 +589,7 @@ def show_mobile_holdings_editor() -> None:
             if st.button("선택 자산 삭제", key=f"mobile_delete_holding_{row_id}", use_container_width=True):
                 db.backup_database("before_mobile_holding_delete")
                 delete_holdings_by_row_ids([row_id])
-                clear_cached_tables("holdings")
+                sync_after_holdings_mutation()
                 st.session_state.pop("mobile_selected_holding", None)
                 st.session_state["mobile_holdings_message"] = f"{symbol} 자산을 삭제했습니다."
                 st.rerun()
@@ -632,6 +648,7 @@ def clear_mobile_holding_state(key_prefix: str) -> None:
         "mh_avg",
         "mh_memo",
         "mh_currency",
+        "mh_lookup_status",
     ]
     for prefix in prefixes:
         st.session_state.pop(f"{prefix}_{key_prefix}", None)
@@ -667,11 +684,11 @@ def lookup_mobile_holding_name(key_prefix: str) -> None:
     symbol = normalize_symbol(market, st.session_state.get(f"mh_symbol_{key_prefix}", ""))
     if not symbol:
         st.session_state[f"mh_name_{key_prefix}"] = ""
+        st.session_state.pop(f"mh_lookup_status_{key_prefix}", None)
         return
-    resolved_name = resolve_security_name_remote(market, symbol, sub_asset)
-    if not resolved_name or resolved_name == symbol:
-        resolved_name = "종목명이 검색되지 않습니다"
-    st.session_state[f"mh_name_{key_prefix}"] = resolved_name
+    result = lookup_security_remote(market, symbol, sub_asset)
+    st.session_state[f"mh_name_{key_prefix}"] = result.name or result.symbol or ""
+    st.session_state[f"mh_lookup_status_{key_prefix}"] = result
 
 
 def render_mobile_holding_form(holdings: pd.DataFrame, row: pd.Series | None, key_prefix: str) -> None:
@@ -706,6 +723,12 @@ def render_mobile_holding_form(holdings: pd.DataFrame, row: pd.Series | None, ke
     currency = infer_currency(market, sub_asset, symbol)
     st.session_state[f"mh_currency_{key_prefix}"] = currency
     name = st.text_input("종목명", key=f"mh_name_{key_prefix}")
+    lookup_status = st.session_state.get(f"mh_lookup_status_{key_prefix}")
+    if isinstance(lookup_status, SecurityLookupResult):
+        if lookup_status.success:
+            st.caption(f"조회 성공: {lookup_status.source}")
+        else:
+            st.warning(f"조회 실패: 데이터소스={lookup_status.source}, 원인={lookup_status.reason or 'not_found'}")
     st.text_input("통화", value=currency, disabled=True, key=f"mh_currency_display_{key_prefix}")
     saebit_qty = st.text_input("새빛_보유수량", key=f"mh_saebit_{key_prefix}")
     heeju_qty = st.text_input("희주_보유수량", key=f"mh_heeju_{key_prefix}")
@@ -720,7 +743,7 @@ def render_mobile_holding_form(holdings: pd.DataFrame, row: pd.Series | None, ke
     if not symbol:
         st.error("티커_또는_종목코드를 입력하세요.")
         return
-    updated = upsert_mobile_holding(
+    updated, saved_row_id = upsert_holding_row(
         holdings,
         str(row.get("row_id", "") or ""),
         {
@@ -737,27 +760,16 @@ def render_mobile_holding_form(holdings: pd.DataFrame, row: pd.Series | None, ke
     )
     db.backup_database("before_mobile_holding_save")
     db.write_table("holdings", updated)
-    clear_cached_tables("holdings")
+    sync_after_holdings_mutation()
+    st.session_state["mobile_selected_holding_row_id"] = saved_row_id
     st.session_state["mobile_holdings_message"] = "자산 데이터를 저장했습니다."
     clear_mobile_holding_state(key_prefix)
     st.rerun()
 
 
 def upsert_mobile_holding(holdings: pd.DataFrame, row_id: str, values: dict[str, object]) -> pd.DataFrame:
-    normalized = normalize_holdings(holdings)
-    target = values.copy()
-    target["상위자산군"] = infer_major_asset_class(str(target["세부자산군"]))
-    target["자산군"] = target["세부자산군"]
-    target["합산_보유수량"] = parse_number(target["새빛_보유수량"]) + parse_number(target["희주_보유수량"])
-    target["보유수량"] = target["합산_보유수량"]
-    if row_id and row_id in set(normalized["row_id"].astype(str)):
-        for column, value in target.items():
-            normalized.loc[normalized["row_id"].astype(str) == row_id, column] = value
-    else:
-        next_order = int(normalized["표시순서"].map(parse_number).max() or 0) + 1 if not normalized.empty else 1
-        target.update({"표시순서": next_order, "sort_order": next_order, "row_id": f"mobile-{datetime.now():%Y%m%d%H%M%S%f}"})
-        normalized = pd.concat([normalized, pd.DataFrame([target])], ignore_index=True)
-    return prepare_holdings(normalized)
+    updated, _ = upsert_holding_row(holdings, row_id, values)
+    return prepare_holdings(updated)
 
 
 def show_mobile_bulk_buy() -> None:
@@ -786,12 +798,14 @@ def show_mobile_bulk_buy() -> None:
             account = st.selectbox("매수계좌", ["새빛", "희주"], key=f"mobile_buy_account_{row_id}")
             symbol = st.text_input("티커_또는_종목코드", key=f"mobile_buy_symbol_{row_id}").strip().upper()
             matched = holdings_lookup.get(symbol)
-            asset_class = matched.get("자산군", "ETF") if matched is not None else "ETF"
-            market = matched.get("시장", "US") if matched is not None else "US"
-            currency = matched.get("통화", "USD") if matched is not None else "USD"
-            name = matched.get("종목명", "") if matched is not None else ""
+            asset_class, market, currency, name, lookup_status = buy_defaults_from_symbol(symbol, matched)
             st.caption(f"종목명: {name or '-'}")
             st.caption(f"자산군/시장/통화: {asset_class} / {market} / {currency}")
+            if matched is None and lookup_status is not None:
+                if lookup_status.success:
+                    st.caption(f"신규 티커 조회 성공: {lookup_status.source}")
+                else:
+                    st.warning(f"신규 티커 조회 실패: 데이터소스={lookup_status.source}, 원인={lookup_status.reason or 'not_found'}")
             if matched is not None:
                 st.caption(
                     "현재 보유수량: "
@@ -816,7 +830,7 @@ def show_mobile_bulk_buy() -> None:
             )
     if st.button("추가매수 일괄 반영", type="primary", use_container_width=True):
         result = apply_buys(pd.DataFrame(rows))
-        clear_cached_tables("holdings", "transactions")
+        sync_after_holdings_mutation("transactions")
         st.success(f"{result}건의 추가매수를 반영했습니다.")
 
 
@@ -936,7 +950,7 @@ def show_holdings_editor() -> None:
         db.backup_database("before_holdings_save")
         db.write_table("holdings", normalized)
         st.session_state["holdings_editor_df"] = prepare_holdings_editor_df(normalized)
-        clear_cached_tables("holdings")
+        sync_after_holdings_mutation()
         st.session_state["holdings_editor_message"] = "자산 데이터를 DB에 저장했습니다."
         st.rerun()
 
@@ -976,7 +990,7 @@ def render_holdings_delete_controls(holdings: pd.DataFrame) -> None:
             st.session_state.pop("pending_delete_selectors", None)
             st.session_state.pop("pending_delete_labels", None)
             st.session_state.pop("holdings_editor_df", None)
-            clear_cached_tables("holdings")
+            sync_after_holdings_mutation()
             st.session_state["holdings_editor_message"] = f"선택한 자산 {deleted_count}건을 삭제했습니다."
             st.rerun()
         if c2.button("삭제 취소", use_container_width=True):
@@ -1024,7 +1038,7 @@ def render_holdings_order_controls(holdings: pd.DataFrame) -> None:
         db.backup_database("before_holdings_order_save")
         updated_count = update_holdings_sort_order(order_items)
         st.session_state.pop("holdings_editor_df", None)
-        clear_cached_tables("holdings")
+        sync_after_holdings_mutation()
         st.session_state["holdings_editor_message"] = f"자산 표시 순서를 저장했습니다. ({updated_count}건)"
         st.rerun()
 
@@ -1083,13 +1097,15 @@ def show_bulk_buy() -> None:
             account = c1.selectbox("매수계좌", ["새빛", "희주"], key=f"buy_account_{row_id}")
             symbol = c2.text_input("티커/종목코드", key=f"buy_symbol_{row_id}", placeholder="예: VT, 005930").strip().upper()
             matched = holdings_lookup.get(symbol)
-            default_asset = matched.get("자산군", "ETF") if matched is not None else "ETF"
-            default_market = matched.get("시장", "US") if matched is not None else "US"
-            default_currency = matched.get("통화", "USD") if matched is not None else "USD"
-            default_name = matched.get("종목명", "") if matched is not None else ""
+            default_asset, default_market, default_currency, default_name, lookup_status = buy_defaults_from_symbol(symbol, matched)
             default_avg = matched.get("평균단가", "") if matched is not None else ""
             st.text(f"종목명: {default_name or '-'}")
             st.text(f"자산군/시장/통화: {default_asset} / {default_market} / {default_currency}")
+            if matched is None and lookup_status is not None:
+                if lookup_status.success:
+                    st.caption(f"신규 티커 조회 성공: {lookup_status.source}")
+                else:
+                    st.warning(f"신규 티커 조회 실패: 데이터소스={lookup_status.source}, 원인={lookup_status.reason or 'not_found'}")
             if matched is not None:
                 st.text(
                     "현재 수량: "
@@ -1129,7 +1145,7 @@ def show_bulk_buy() -> None:
     buys = pd.DataFrame(rows)
     if st.button("추가매수 DB 반영", type="primary", use_container_width=True):
         result = apply_buys(buys)
-        clear_cached_tables("holdings", "transactions")
+        sync_after_holdings_mutation("transactions")
         st.success(f"{result}건의 추가매수를 반영했습니다.")
 
 
@@ -1564,6 +1580,26 @@ def apply_buys(buys: pd.DataFrame) -> int:
     return applied
 
 
+def buy_defaults_from_symbol(symbol: str, matched: pd.Series | None) -> tuple[str, str, str, str, SecurityLookupResult | None]:
+    if matched is not None:
+        asset_class = str(matched.get("자산군", "ETF") or "ETF")
+        market = str(matched.get("시장", "US") or "US")
+        currency = str(matched.get("통화", "USD") or "USD")
+        name = str(matched.get("종목명", "") or "")
+        return asset_class, market, currency, name, None
+
+    normalized_symbol = normalize_symbol("US", symbol)
+    asset_class = "ETF"
+    market = "US"
+    currency = infer_currency(market, asset_class, normalized_symbol)
+    if not normalized_symbol:
+        return asset_class, market, currency, "", None
+
+    lookup_status = lookup_security_remote(market, normalized_symbol, asset_class)
+    name = lookup_status.name if lookup_status.success else normalized_symbol
+    return asset_class, market, currency, name, lookup_status
+
+
 def make_transaction(row, account, asset_class, market, symbol, name, quantity, unit_price, currency, holdings, trade_type: str) -> dict:
     latest = holdings[holdings["티커 또는 종목코드"].astype(str).str.upper() == symbol].iloc[0]
     return {
@@ -1695,18 +1731,24 @@ def resolve_security_name_fast(market: str, symbol: str, sub_asset_class: str, n
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def resolve_security_name_remote(market: str, symbol: str, sub_asset_class: str) -> str:
+def lookup_security_remote(market: str, symbol: str, sub_asset_class: str) -> SecurityLookupResult:
     normalized_market = str(market or "").strip().upper()
     normalized_symbol = normalize_symbol(normalized_market, symbol)
     if not normalized_symbol:
-        return ""
+        return SecurityLookupResult(normalized_market, "", "", False, "input", "empty_symbol")
     fast = resolve_security_name_fast(normalized_market, normalized_symbol, sub_asset_class)
     if fast:
-        return fast
+        return SecurityLookupResult(normalized_market, normalized_symbol, fast, True, "local_cache")
     try:
-        return get_security_name(normalized_market, normalized_symbol, sub_asset_class, sub_asset_class)
-    except Exception:
-        return normalized_symbol
+        return lookup_security(normalized_market, normalized_symbol, sub_asset_class, sub_asset_class)
+    except Exception as exc:
+        return SecurityLookupResult(normalized_market, normalized_symbol, "", False, "lookup_security", type(exc).__name__)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def resolve_security_name_remote(market: str, symbol: str, sub_asset_class: str) -> str:
+    result = lookup_security_remote(market, symbol, sub_asset_class)
+    return result.name if result.name else result.symbol
 
 
 def dataframes_equal(left: pd.DataFrame, right: pd.DataFrame) -> bool:
