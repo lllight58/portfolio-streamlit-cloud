@@ -876,13 +876,6 @@ def show_mobile_bulk_buy() -> None:
     holdings_lookup = {str(row.get("티커 또는 종목코드", "")).upper(): row for _, row in holdings.iterrows()}
     if "mobile_buy_row_ids" not in st.session_state:
         st.session_state["mobile_buy_row_ids"] = [f"mbuy-{datetime.now():%H%M%S%f}"]
-    c1, c2 = st.columns(2)
-    if c1.button("매수 종목 추가", use_container_width=True):
-        st.session_state["mobile_buy_row_ids"].append(f"mbuy-{datetime.now():%H%M%S%f}")
-        st.rerun()
-    if c2.button("입력 초기화", use_container_width=True):
-        st.session_state["mobile_buy_row_ids"] = [f"mbuy-{datetime.now():%H%M%S%f}"]
-        st.rerun()
 
     rows = []
     for number, row_id in enumerate(st.session_state["mobile_buy_row_ids"], start=1):
@@ -910,8 +903,8 @@ def show_mobile_bulk_buy() -> None:
                     f"희주 {format_quantity_for_display(matched.get('희주_보유수량'), asset_class, market, symbol)}"
                 )
                 st.caption(f"평균단가: {format_number_for_display(matched.get('평균단가'), 2)}")
-            quantity = st.text_input("추가매수수량", key=f"mobile_buy_quantity_{row_id}", on_change=format_session_number_input, args=(f"mobile_buy_quantity_{row_id}",))
-            price = st.text_input("추가매수단가", key=f"mobile_buy_price_{row_id}", on_change=format_session_number_input, args=(f"mobile_buy_price_{row_id}",))
+            quantity = st.text_input("추가매수수량", key=f"mobile_buy_quantity_{row_id}", placeholder="예: 1 또는 0.12345678")
+            price = st.text_input("추가매수단가", key=f"mobile_buy_price_{row_id}", placeholder="예: 123.45 또는 78.9012")
             rows.append(
                 {
                     "매수계좌": account,
@@ -925,6 +918,13 @@ def show_mobile_bulk_buy() -> None:
                     "메모": "",
                 }
             )
+    add_col, reset_col = st.columns(2)
+    if add_col.button("매수 종목 추가", key="mobile_add_buy_row_button", use_container_width=True):
+        st.session_state["mobile_buy_row_ids"].append(f"mbuy-{datetime.now():%H%M%S%f}")
+        st.rerun()
+    if reset_col.button("입력 초기화", key="mobile_reset_buy_rows_button", use_container_width=True):
+        st.session_state["mobile_buy_row_ids"] = [f"mbuy-{datetime.now():%H%M%S%f}"]
+        st.rerun()
     if st.button("추가매수 일괄 반영", type="primary", use_container_width=True):
         result = apply_buys(pd.DataFrame(rows))
         sync_after_holdings_mutation("transactions")
@@ -1406,16 +1406,6 @@ def show_bulk_buy() -> None:
     holdings_lookup = {str(row.get("티커 또는 종목코드", "")).upper(): row for _, row in holdings.iterrows()}
     if "buy_row_ids" not in st.session_state:
         st.session_state["buy_row_ids"] = [f"buy-{datetime.now():%H%M%S%f}"]
-    b1, b2 = st.columns(2)
-    if b1.button("행 추가", use_container_width=True):
-        st.session_state["buy_row_ids"].append(f"buy-{datetime.now():%H%M%S%f}")
-        st.rerun()
-    if b2.button("입력 초기화", use_container_width=True):
-        for row_id in st.session_state["buy_row_ids"]:
-            for field in ["account", "symbol", "quantity", "price", "memo"]:
-                st.session_state.pop(f"buy_{field}_{row_id}", None)
-        st.session_state["buy_row_ids"] = [f"buy-{datetime.now():%H%M%S%f}"]
-        st.rerun()
     rows = []
     for row_number, row_id in enumerate(st.session_state["buy_row_ids"], start=1):
         with st.container(border=True):
@@ -1454,15 +1444,11 @@ def show_bulk_buy() -> None:
                 "추가매수수량",
                 key=f"buy_quantity_{row_id}",
                 placeholder="예: 1,000 또는 0.12345678",
-                on_change=format_session_number_input,
-                args=(f"buy_quantity_{row_id}",),
             )
             price_text = p_col.text_input(
                 "추가매수단가",
                 key=f"buy_price_{row_id}",
-                placeholder="예: 75,000.55",
-                on_change=format_session_number_input,
-                args=(f"buy_price_{row_id}",),
+                placeholder="예: 123.45 또는 78.9012",
             )
             rows.append(
                 {
@@ -1477,6 +1463,16 @@ def show_bulk_buy() -> None:
                     "메모": "",
                 }
             )
+    add_col, reset_col = st.columns(2)
+    if add_col.button("매수 종목 추가", key="desktop_add_buy_row_button", use_container_width=True):
+        st.session_state["buy_row_ids"].append(f"buy-{datetime.now():%H%M%S%f}")
+        st.rerun()
+    if reset_col.button("입력 초기화", key="desktop_reset_buy_rows_button", use_container_width=True):
+        for row_id in st.session_state["buy_row_ids"]:
+            for field in ["account", "symbol", "quantity", "price", "memo"]:
+                st.session_state.pop(f"buy_{field}_{row_id}", None)
+        st.session_state["buy_row_ids"] = [f"buy-{datetime.now():%H%M%S%f}"]
+        st.rerun()
     buys = pd.DataFrame(rows)
     if st.button("추가매수 DB 반영", type="primary", use_container_width=True):
         result = apply_buys(buys)

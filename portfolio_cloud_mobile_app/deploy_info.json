@@ -1,5 +1,5 @@
 ﻿{
-    "deployed_at_kst":  "2026-06-30 12:29:38",
-    "message":  "Add mobile asset order editor debug UI",
+    "deployed_at_kst":  "2026-06-30 12:34:28",
+    "message":  "Fix decimal buy inputs and add button placement",
     "streamlit_url":  "https://lllight58-portfolio-stream-portfolio-cloud-mobile-appapp-6nltfr.streamlit.app/"
 }

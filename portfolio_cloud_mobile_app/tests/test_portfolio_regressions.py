@@ -1,8 +1,12 @@
 import unittest
+import os
+from pathlib import Path
+from uuid import uuid4
 
 import pandas as pd
 
 import app
+from src import db
 from src.portfolio_calculator import HOLDINGS_COLUMNS, sample_holdings
 from src.repositories.holdings_repository import upsert_holding_row
 from src.symbol_resolver import lookup_security
@@ -92,6 +96,61 @@ class HoldingUpsertTests(unittest.TestCase):
             },
         )
         self.assertEqual(list(updated.columns), HOLDINGS_COLUMNS)
+
+    def test_apply_buys_preserves_decimal_quantity_and_price(self):
+        old_backend = os.environ.get("DATABASE_BACKEND")
+        old_sqlite_path = os.environ.get("SQLITE_DB_PATH")
+        tmp_db = Path("data") / f"test_decimal_buys_{uuid4().hex}.db"
+        try:
+            os.environ["DATABASE_BACKEND"] = "sqlite"
+            os.environ["SQLITE_DB_PATH"] = str(tmp_db)
+            db.initialize_database()
+            app.clear_cached_tables("holdings", "transactions")
+
+            applied = app.apply_buys(
+                pd.DataFrame(
+                    [
+                        {
+                            "매수계좌": "새빛",
+                            "티커 또는 종목코드": "DECIMALTEST",
+                            "종목명": "Decimal Test",
+                            "자산군": "ETF",
+                            "시장": "US",
+                            "통화": "USD",
+                            "매수수량": 0.12345678,
+                            "매수단가": 78.9012,
+                            "메모": "",
+                        }
+                    ]
+                )
+            )
+
+            holdings = app.normalize_holdings(db.read_table("holdings"))
+            transactions = db.read_table("transactions")
+            row = holdings[holdings["티커 또는 종목코드"] == "DECIMALTEST"].iloc[0]
+            tx = transactions[transactions["티커 또는 종목코드"] == "DECIMALTEST"].iloc[0]
+
+            self.assertEqual(applied, 1)
+            self.assertAlmostEqual(float(row["새빛_보유수량"]), 0.12345678)
+            self.assertAlmostEqual(float(row["평균단가"]), 78.9012)
+            self.assertAlmostEqual(float(tx["매수수량"]), 0.12345678)
+            self.assertAlmostEqual(float(tx["매수단가"]), 78.9012)
+            self.assertAlmostEqual(float(tx["매수금액"]), 0.12345678 * 78.9012)
+        finally:
+            app.clear_cached_tables("holdings", "transactions")
+            if tmp_db.exists():
+                try:
+                    tmp_db.unlink()
+                except PermissionError:
+                    pass
+            if old_backend is None:
+                os.environ.pop("DATABASE_BACKEND", None)
+            else:
+                os.environ["DATABASE_BACKEND"] = old_backend
+            if old_sqlite_path is None:
+                os.environ.pop("SQLITE_DB_PATH", None)
+            else:
+                os.environ["SQLITE_DB_PATH"] = old_sqlite_path
 
 
 class AssetOrderTests(unittest.TestCase):
