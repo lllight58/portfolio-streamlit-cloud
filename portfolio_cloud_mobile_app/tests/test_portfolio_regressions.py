@@ -129,6 +129,8 @@ class HoldingUpsertTests(unittest.TestCase):
             transactions = db.read_table("transactions")
             row = holdings[holdings["티커 또는 종목코드"] == "DECIMALTEST"].iloc[0]
             tx = transactions[transactions["티커 또는 종목코드"] == "DECIMALTEST"].iloc[0]
+            buy_transactions = db.read_table("buy_transactions")
+            buy_tx = buy_transactions[buy_transactions["티커"] == "DECIMALTEST"].iloc[0]
 
             self.assertEqual(applied, 1)
             self.assertAlmostEqual(float(row["새빛_보유수량"]), 0.12345678)
@@ -136,8 +138,127 @@ class HoldingUpsertTests(unittest.TestCase):
             self.assertAlmostEqual(float(tx["매수수량"]), 0.12345678)
             self.assertAlmostEqual(float(tx["매수단가"]), 78.9012)
             self.assertAlmostEqual(float(tx["매수금액"]), 0.12345678 * 78.9012)
+            self.assertAlmostEqual(float(buy_tx["수량"]), 0.12345678)
+            self.assertAlmostEqual(float(buy_tx["단가"]), 78.9012)
         finally:
             app.clear_cached_tables("holdings", "transactions")
+            if tmp_db.exists():
+                try:
+                    tmp_db.unlink()
+                except PermissionError:
+                    pass
+            if old_backend is None:
+                os.environ.pop("DATABASE_BACKEND", None)
+            else:
+                os.environ["DATABASE_BACKEND"] = old_backend
+            if old_sqlite_path is None:
+                os.environ.pop("SQLITE_DB_PATH", None)
+            else:
+                os.environ["SQLITE_DB_PATH"] = old_sqlite_path
+
+    def test_revert_buy_transaction_recalculates_average_price(self):
+        old_backend = os.environ.get("DATABASE_BACKEND")
+        old_sqlite_path = os.environ.get("SQLITE_DB_PATH")
+        tmp_db = Path("data") / f"test_revert_buy_{uuid4().hex}.db"
+        try:
+            os.environ["DATABASE_BACKEND"] = "sqlite"
+            os.environ["SQLITE_DB_PATH"] = str(tmp_db)
+            db.initialize_database()
+            app.clear_cached_tables("holdings", "transactions", "buy_transactions")
+
+            buys = pd.DataFrame(
+                [
+                    {
+                        "매수계좌": "새빛",
+                        "티커 또는 종목코드": "VT",
+                        "종목명": "Vanguard Total World Stock ETF",
+                        "자산군": "ETF",
+                        "시장": "US",
+                        "통화": "USD",
+                        "매수수량": 0.5,
+                        "매수단가": 123.45,
+                        "메모": "",
+                    }
+                ]
+            )
+            before = app.normalize_holdings(db.read_table("holdings"))
+            before_vt = before[before["티커 또는 종목코드"] == "VT"].iloc[0]
+            before_qty = float(before_vt["새빛_보유수량"])
+            before_avg = float(before_vt["평균단가"])
+
+            self.assertEqual(app.apply_buys(buys), 1)
+            tx = app.load_recent_buy_transactions(limit=5)[0]
+            app.revert_buy_transaction(str(tx["거래ID"]))
+
+            after = app.normalize_holdings(db.read_table("holdings"))
+            after_vt = after[after["티커 또는 종목코드"] == "VT"].iloc[0]
+            buy_transactions = app.normalize_buy_transactions(db.read_table("buy_transactions"))
+
+            self.assertAlmostEqual(float(after_vt["새빛_보유수량"]), before_qty)
+            self.assertAlmostEqual(float(after_vt["평균단가"]), before_avg)
+            self.assertTrue(bool(buy_transactions.iloc[0]["되돌림여부"]))
+            self.assertEqual(app.load_recent_buy_transactions(limit=5), [])
+            with self.assertRaises(ValueError):
+                app.revert_buy_transaction(str(tx["거래ID"]))
+        finally:
+            app.clear_cached_tables("holdings", "transactions", "buy_transactions")
+            if tmp_db.exists():
+                try:
+                    tmp_db.unlink()
+                except PermissionError:
+                    pass
+            if old_backend is None:
+                os.environ.pop("DATABASE_BACKEND", None)
+            else:
+                os.environ["DATABASE_BACKEND"] = old_backend
+            if old_sqlite_path is None:
+                os.environ.pop("SQLITE_DB_PATH", None)
+            else:
+                os.environ["SQLITE_DB_PATH"] = old_sqlite_path
+
+    def test_revert_one_row_from_batch_and_recent_limit(self):
+        old_backend = os.environ.get("DATABASE_BACKEND")
+        old_sqlite_path = os.environ.get("SQLITE_DB_PATH")
+        tmp_db = Path("data") / f"test_revert_batch_{uuid4().hex}.db"
+        try:
+            os.environ["DATABASE_BACKEND"] = "sqlite"
+            os.environ["SQLITE_DB_PATH"] = str(tmp_db)
+            db.initialize_database()
+            app.clear_cached_tables("holdings", "transactions", "buy_transactions")
+
+            rows = []
+            for index in range(6):
+                rows.append(
+                    {
+                        "매수계좌": "새빛",
+                        "티커 또는 종목코드": f"BATCH{index}",
+                        "종목명": f"Batch {index}",
+                        "자산군": "ETF",
+                        "시장": "US",
+                        "통화": "USD",
+                        "매수수량": 1 + index / 10,
+                        "매수단가": 10.25 + index,
+                        "메모": "",
+                    }
+                )
+            self.assertEqual(app.apply_buys(pd.DataFrame(rows[:3])), 3)
+            self.assertEqual(app.apply_buys(pd.DataFrame(rows[3:])), 3)
+
+            recent = app.load_recent_buy_transactions(limit=5)
+            self.assertEqual(len(recent), 5)
+            target = recent[0]
+            target_symbol = str(target["티커"])
+            app.revert_buy_transaction(str(target["거래ID"]))
+
+            holdings = app.normalize_holdings(db.read_table("holdings"))
+            reverted_row = holdings[holdings["티커 또는 종목코드"] == target_symbol].iloc[0]
+            active_symbols = {str(tx["티커"]) for tx in app.load_recent_buy_transactions(limit=5)}
+
+            self.assertAlmostEqual(float(reverted_row["합산_보유수량"]), 0.0)
+            self.assertNotIn(target_symbol, active_symbols)
+            self.assertGreaterEqual(len(active_symbols), 4)
+        finally:
+            app.clear_cached_tables("holdings", "transactions", "buy_transactions")
             if tmp_db.exists():
                 try:
                     tmp_db.unlink()

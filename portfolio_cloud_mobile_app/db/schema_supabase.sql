@@ -47,6 +47,26 @@ create table if not exists transactions (
     constraint transactions_account_check check (account is null or account in ('새빛', '희주'))
 );
 
+create table if not exists buy_transactions (
+    id text primary key,
+    batch_id text,
+    asset_id text,
+    ticker text,
+    asset_name text,
+    account text,
+    quantity numeric default 0,
+    unit_price numeric default 0,
+    amount numeric default 0,
+    currency text,
+    memo text,
+    created_at timestamptz default now(),
+    is_reverted boolean default false,
+    reverted_at timestamptz,
+    revert_reason text,
+    updated_at timestamptz default now(),
+    constraint buy_transactions_account_check check (account is null or account in ('새빛', '희주'))
+);
+
 create table if not exists capital_flows (
     id bigserial primary key,
     flow_datetime text,

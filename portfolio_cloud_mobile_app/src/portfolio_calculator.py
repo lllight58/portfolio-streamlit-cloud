@@ -78,6 +78,10 @@ def empty_transactions() -> pd.DataFrame:
     return pd.DataFrame(columns=TRANSACTION_COLUMNS)
 
 
+def empty_buy_transactions() -> pd.DataFrame:
+    return pd.DataFrame(columns=BUY_TRANSACTION_COLUMNS)
+
+
 def empty_capital_flows() -> pd.DataFrame:
     return pd.DataFrame(columns=CAPITAL_FLOW_COLUMNS)
 
@@ -106,6 +110,24 @@ TRANSACTION_COLUMNS = [
     "반영 후 합산_보유수량",
     "반영 후 보유수량",
     "반영 후 평균단가",
+]
+
+BUY_TRANSACTION_COLUMNS = [
+    "거래ID",
+    "일괄반영ID",
+    "자산ID",
+    "티커",
+    "종목명",
+    "계좌",
+    "수량",
+    "단가",
+    "금액",
+    "통화",
+    "메모",
+    "생성일시",
+    "되돌림여부",
+    "되돌림일시",
+    "되돌림사유",
 ]
 
 

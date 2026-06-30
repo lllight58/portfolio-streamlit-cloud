@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -34,6 +35,7 @@ from src.portfolio_calculator import (
     CAPITAL_FLOW_TYPES,
     MARKETS,
     TRANSACTION_COLUMNS,
+    BUY_TRANSACTION_COLUMNS,
     account_asset_class_summary,
     account_value_summary,
     append_capital_flow,
@@ -927,8 +929,9 @@ def show_mobile_bulk_buy() -> None:
         st.rerun()
     if st.button("추가매수 일괄 반영", type="primary", use_container_width=True):
         result = apply_buys(pd.DataFrame(rows))
-        sync_after_holdings_mutation("transactions")
+        sync_after_holdings_mutation("transactions", "buy_transactions")
         st.success(f"{result}건의 추가매수를 반영했습니다.")
+    render_buy_transaction_revert_section(context="mobile")
 
 
 def show_mobile_capital_flows() -> None:
@@ -1476,8 +1479,9 @@ def show_bulk_buy() -> None:
     buys = pd.DataFrame(rows)
     if st.button("추가매수 DB 반영", type="primary", use_container_width=True):
         result = apply_buys(buys)
-        sync_after_holdings_mutation("transactions")
+        sync_after_holdings_mutation("transactions", "buy_transactions")
         st.success(f"{result}건의 추가매수를 반영했습니다.")
+    render_buy_transaction_revert_section(context="desktop")
 
 
 def show_capital_flows() -> None:
@@ -1850,14 +1854,17 @@ def prepare_holdings(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def apply_buys(buys: pd.DataFrame) -> int:
-    holdings = normalize_holdings(load_table_cached("holdings"))
+    holdings = normalize_holdings(db.read_table("holdings"))
     transaction_rows = []
+    buy_transaction_rows = []
+    batch_id = str(uuid4())
+    created_at = datetime.now().isoformat(timespec="seconds")
     applied = 0
     for _, row in buys.iterrows():
         quantity = parse_number(row.get("매수수량"))
         unit_price = parse_number(row.get("매수단가"))
         symbol = str(row.get("티커 또는 종목코드", "") or "").strip().upper()
-        if not symbol or quantity <= 0:
+        if not symbol or quantity <= 0 or unit_price < 0:
             continue
         account = str(row.get("매수계좌", "새빛") or "새빛")
         asset_class = normalize_sub_asset_class(row.get("자산군", "ETF"))
@@ -1903,12 +1910,202 @@ def apply_buys(buys: pd.DataFrame) -> int:
             holdings = pd.concat([holdings, pd.DataFrame([new_row])], ignore_index=True)
         holdings = prepare_holdings(holdings)
         transaction_rows.append(make_transaction(row, account, asset_class, market, symbol, name, quantity, unit_price, currency, holdings, trade_type))
+        latest = holdings[holdings["티커 또는 종목코드"].astype(str).str.upper() == symbol].iloc[0]
+        buy_transaction_rows.append(
+            record_buy_transaction(
+                batch_id,
+                str(latest.get("row_id", "") or ""),
+                {
+                    "티커": symbol,
+                    "종목명": name,
+                    "계좌": account,
+                    "수량": quantity,
+                    "단가": unit_price,
+                    "금액": quantity * unit_price,
+                    "통화": currency,
+                    "메모": str(row.get("메모", "") or ""),
+                    "생성일시": created_at,
+                },
+            )
+        )
         applied += 1
     if applied:
         db.backup_database("before_bulk_buy")
         db.write_table("holdings", holdings)
         db.append_rows("transactions", pd.DataFrame(transaction_rows, columns=TRANSACTION_COLUMNS))
+        db.append_rows("buy_transactions", pd.DataFrame(buy_transaction_rows, columns=BUY_TRANSACTION_COLUMNS))
     return applied
+
+
+def record_buy_transaction(batch_id: str, asset_id: str, row: dict | pd.Series) -> dict:
+    quantity = parse_number(row.get("수량", row.get("매수수량", 0)))
+    unit_price = parse_number(row.get("단가", row.get("매수단가", 0)))
+    return {
+        "거래ID": str(uuid4()),
+        "일괄반영ID": batch_id,
+        "자산ID": str(asset_id or ""),
+        "티커": str(row.get("티커", row.get("티커 또는 종목코드", "")) or "").strip().upper(),
+        "종목명": str(row.get("종목명", "") or ""),
+        "계좌": str(row.get("계좌", row.get("매수계좌", "새빛")) or "새빛"),
+        "수량": quantity,
+        "단가": unit_price,
+        "금액": parse_number(row.get("금액")) or quantity * unit_price,
+        "통화": str(row.get("통화", "USD") or "USD").upper(),
+        "메모": str(row.get("메모", "") or ""),
+        "생성일시": str(row.get("생성일시", "") or datetime.now().isoformat(timespec="seconds")),
+        "되돌림여부": False,
+        "되돌림일시": "",
+        "되돌림사유": "",
+    }
+
+
+def render_buy_transaction_revert_section(context: str) -> None:
+    st.divider()
+    st.subheader("최근 추가매수 반영 내역 되돌리기")
+    recent_tx = load_recent_buy_transactions(limit=5)
+    if not recent_tx:
+        st.info("되돌릴 수 있는 최근 추가매수 내역이 없습니다.")
+        return
+
+    options = {format_buy_transaction_label(tx): str(tx.get("거래ID", "")) for tx in recent_tx}
+    selected_label = st.radio(
+        "되돌릴 추가매수 내역을 1개만 선택하세요.",
+        list(options.keys()),
+        key=f"{context}_revert_buy_transaction_radio",
+    )
+    selected_tx_id = options[selected_label]
+    st.warning("선택한 추가매수 1건만 되돌립니다. 여러 건 일괄 삭제는 지원하지 않습니다.")
+    confirm = st.checkbox(
+        "선택한 추가매수 반영 내역을 되돌리는 것을 확인합니다.",
+        key=f"{context}_confirm_revert_buy_transaction",
+    )
+    if st.button(
+        "선택한 추가매수 1건 되돌리기",
+        key=f"{context}_revert_one_buy_transaction_button",
+        disabled=not confirm,
+        use_container_width=True,
+    ):
+        try:
+            revert_buy_transaction(selected_tx_id)
+        except ValueError as exc:
+            st.error(str(exc))
+            return
+        clear_buy_transaction_cache()
+        st.success("선택한 추가매수 1건을 되돌렸습니다.")
+        st.rerun()
+
+
+def load_recent_buy_transactions(limit: int = 5) -> list[dict]:
+    transactions = normalize_buy_transactions(db.read_table("buy_transactions"))
+    if transactions.empty:
+        return []
+    active = transactions[~transactions["되돌림여부"].map(is_truthy)].copy()
+    if active.empty:
+        return []
+    active["_created_sort"] = pd.to_datetime(active["생성일시"], errors="coerce")
+    active = active.sort_values(["_created_sort", "생성일시"], ascending=[False, False], kind="stable")
+    return active.drop(columns=["_created_sort"], errors="ignore").head(limit).to_dict("records")
+
+
+def normalize_buy_transactions(df: pd.DataFrame | None) -> pd.DataFrame:
+    output = df.copy() if df is not None else pd.DataFrame()
+    for column in BUY_TRANSACTION_COLUMNS:
+        if column not in output.columns:
+            output[column] = False if column == "되돌림여부" else ""
+    output = output[BUY_TRANSACTION_COLUMNS].copy()
+    for column in ["수량", "단가", "금액"]:
+        output[column] = output[column].map(parse_number)
+    output["되돌림여부"] = output["되돌림여부"].map(is_truthy)
+    return output
+
+
+def is_truthy(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    text = str(value).strip().lower()
+    return text in {"1", "true", "t", "yes", "y", "on", "되돌림", "완료"}
+
+
+def format_buy_transaction_label(tx: dict) -> str:
+    created_at = str(tx.get("생성일시", "") or "")
+    symbol = str(tx.get("티커", "") or "")
+    account = str(tx.get("계좌", "") or "")
+    quantity = format_quantity_for_display(tx.get("수량"), "", "", symbol)
+    unit_price = format_number_for_display(tx.get("단가"), 4)
+    amount = format_number_for_display(tx.get("금액"), 2)
+    currency = str(tx.get("통화", "") or "")
+    return f"{created_at} | {symbol} | {quantity}주 × {unit_price} | {account} 계좌 | {amount} {currency}"
+
+
+def revert_buy_transaction(transaction_id: str) -> None:
+    transaction_id = str(transaction_id or "").strip()
+    if not transaction_id:
+        raise ValueError("되돌릴 거래 ID가 없습니다.")
+
+    transactions = normalize_buy_transactions(db.read_table("buy_transactions"))
+    matches = transactions["거래ID"].astype(str) == transaction_id
+    if not matches.any():
+        raise ValueError("선택한 추가매수 이력을 찾을 수 없습니다.")
+    tx_idx = transactions[matches].index[0]
+    tx = transactions.loc[tx_idx]
+    if is_truthy(tx.get("되돌림여부")):
+        raise ValueError("이미 되돌린 추가매수 이력입니다.")
+
+    quantity = parse_number(tx.get("수량"))
+    unit_price = parse_number(tx.get("단가"))
+    if quantity <= 0:
+        raise ValueError("되돌릴 수량이 0 이하입니다.")
+
+    holdings = normalize_holdings(db.read_table("holdings"))
+    asset_id = str(tx.get("자산ID", "") or "").strip()
+    symbol = str(tx.get("티커", "") or "").strip().upper()
+    if asset_id:
+        holding_matches = holdings["row_id"].fillna("").astype(str) == asset_id
+    else:
+        holding_matches = holdings["티커 또는 종목코드"].fillna("").astype(str).str.upper() == symbol
+    if not holding_matches.any() and symbol:
+        holding_matches = holdings["티커 또는 종목코드"].fillna("").astype(str).str.upper() == symbol
+    if not holding_matches.any():
+        raise ValueError("되돌릴 자산을 찾을 수 없습니다.")
+
+    holding_idx = holdings[holding_matches].index[0]
+    account = str(tx.get("계좌", "새빛") or "새빛")
+    target_col = "새빛_보유수량" if account == "새빛" else "희주_보유수량"
+    account_quantity = parse_number(holdings.at[holding_idx, target_col])
+    old_total_quantity = parse_number(holdings.at[holding_idx, "합산_보유수량"])
+    old_avg_price = parse_number(holdings.at[holding_idx, "평균단가"])
+    if account_quantity + 1e-12 < quantity or old_total_quantity + 1e-12 < quantity:
+        raise ValueError("되돌리면 자산 수량이 음수가 되어 취소할 수 없습니다.")
+
+    old_total_cost = old_total_quantity * old_avg_price
+    new_account_quantity = max(0.0, account_quantity - quantity)
+    new_total_quantity = max(0.0, old_total_quantity - quantity)
+    new_total_cost = max(0.0, old_total_cost - (quantity * unit_price))
+    new_avg_price = new_total_cost / new_total_quantity if new_total_quantity > 0 else 0.0
+
+    updated_holdings = holdings.copy()
+    updated_holdings.at[holding_idx, target_col] = new_account_quantity
+    updated_holdings.at[holding_idx, "합산_보유수량"] = new_total_quantity
+    updated_holdings.at[holding_idx, "보유수량"] = new_total_quantity
+    updated_holdings.at[holding_idx, "평균단가"] = new_avg_price
+    updated_holdings = prepare_holdings(updated_holdings)
+
+    updated_transactions = transactions.copy()
+    updated_transactions.at[tx_idx, "되돌림여부"] = True
+    updated_transactions.at[tx_idx, "되돌림일시"] = datetime.now().isoformat(timespec="seconds")
+    updated_transactions.at[tx_idx, "되돌림사유"] = "사용자 요청"
+
+    db.backup_database("before_revert_buy_transaction")
+    db.write_table("holdings", updated_holdings)
+    db.write_table("buy_transactions", updated_transactions)
+
+
+def clear_buy_transaction_cache() -> None:
+    for key in ["buy_transactions", "revert_buy_transaction_radio", "confirm_revert_buy_transaction"]:
+        st.session_state.pop(key, None)
+    sync_after_holdings_mutation("transactions", "buy_transactions")
 
 
 def buy_defaults_from_symbol(symbol: str, matched: pd.Series | None) -> tuple[str, str, str, str, SecurityLookupResult | None]:
