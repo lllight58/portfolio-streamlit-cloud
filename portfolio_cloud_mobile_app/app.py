@@ -1100,6 +1100,10 @@ def render_holdings_order_controls(holdings: pd.DataFrame, context: str = "deskt
     st.divider()
     st.subheader("자산 표시 순서 변경")
     st.caption("자산 표시 순서를 바꾸고 싶으면 아래 항목을 드래그해서 원하는 순서로 배치한 뒤, 순서 저장 버튼을 누르세요.")
+    if context == "mobile":
+        render_mobile_asset_order_editor(holdings)
+        return
+
     order_items = build_asset_order_items(holdings)
     if not order_items:
         render_asset_order_empty_diagnostics(holdings)
@@ -1126,6 +1130,141 @@ def render_holdings_order_controls(holdings: pd.DataFrame, context: str = "deskt
         sync_after_holdings_mutation()
         st.session_state["holdings_editor_message"] = f"자산 표시 순서를 저장했습니다. ({updated_count}건)"
         st.rerun()
+
+
+def render_mobile_asset_order_editor(assets_df: pd.DataFrame | None) -> None:
+    order_df = build_asset_order_df(assets_df)
+
+    st.caption("DEBUG: mobile asset order section rendered - 2026-06-30")
+    st.caption(f"DEBUG: assets rows = {0 if assets_df is None else len(assets_df)}")
+    st.caption(f"DEBUG: order rows = {len(order_df)}")
+
+    if order_df.empty:
+        st.warning("표시할 자산이 없습니다. 자산 데이터 로딩 또는 필터 조건을 확인하세요.")
+        render_asset_order_empty_diagnostics(assets_df)
+        return
+
+    fallback_state_key = "mobile_holdings_order_ids"
+    original_ids = order_df["id"].astype(str).tolist()
+    state_ids = [row_id for row_id in st.session_state.get(fallback_state_key, original_ids) if row_id in set(original_ids)]
+    state_ids += [row_id for row_id in original_ids if row_id not in state_ids]
+    if state_ids != original_ids:
+        order_df = (
+            order_df.assign(_state_order=order_df["id"].astype(str).map({row_id: index for index, row_id in enumerate(state_ids)}))
+            .sort_values(["_state_order", "label"], kind="stable")
+            .drop(columns=["_state_order"])
+            .reset_index(drop=True)
+        )
+
+    editable_df = order_df[["display_order", "label", "id"]].copy()
+    editable_df["display_order"] = range(1, len(editable_df) + 1)
+    edited = st.data_editor(
+        editable_df,
+        key="mobile_asset_order_editor",
+        hide_index=True,
+        disabled=["label", "id"],
+        column_config={
+            "display_order": st.column_config.NumberColumn(
+                "표시순서",
+                min_value=1,
+                max_value=len(editable_df),
+                step=1,
+            ),
+            "label": st.column_config.TextColumn("자산"),
+            "id": st.column_config.TextColumn("ID"),
+        },
+        use_container_width=True,
+    )
+
+    fallback_items = [{"id": str(row["id"]), "label": str(row["label"])} for _, row in editable_df.iterrows()]
+    st.caption("드래그 또는 숫자 편집이 불편하면 아래 버튼으로도 순서를 바꿀 수 있습니다.")
+    button_items = render_asset_order_fallback(fallback_items, "mobile")
+
+    if st.button("순서 저장", key="mobile_save_asset_order", use_container_width=True):
+        button_ids = [item["id"] for item in button_items]
+        if isinstance(edited, pd.DataFrame) and not edited.empty:
+            saved_df = edited.copy()
+            saved_df["display_order"] = saved_df["display_order"].map(parse_number).astype(int)
+            saved_df = saved_df.sort_values(["display_order", "label"], kind="stable").reset_index(drop=True)
+            ordered_ids = saved_df["id"].astype(str).tolist()
+        else:
+            ordered_ids = button_ids
+        if button_ids != editable_df["id"].astype(str).tolist() and ordered_ids == editable_df["id"].astype(str).tolist():
+            ordered_ids = button_ids
+        updated_count = save_asset_display_order(ordered_ids)
+        clear_asset_cache_if_exists()
+        st.session_state["mobile_holdings_message"] = f"자산 표시 순서를 저장했습니다. ({updated_count}건)"
+        st.success("자산 표시 순서를 저장했습니다.")
+        st.rerun()
+
+
+def build_asset_order_df(assets_df: pd.DataFrame | None) -> pd.DataFrame:
+    if assets_df is None or assets_df.empty:
+        return pd.DataFrame(columns=["id", "label", "display_order"])
+
+    df = normalize_holdings(assets_df).copy()
+    if "sort_order" not in df.columns:
+        df["sort_order"] = None
+    order_values = df["sort_order"].map(parse_number)
+    fallback_order = pd.Series(range(len(df)), index=df.index)
+    df["display_order"] = order_values.where(order_values >= 0, fallback_order)
+
+    rows = []
+    for idx, row in df.iterrows():
+        asset_id = str(row.get("row_id", "") or "").strip()
+        if not asset_id:
+            continue
+
+        ticker = str(row.get("티커 또는 종목코드", "") or "").strip()
+        name = str(row.get("종목명", "") or "").strip()
+        asset_class = str(row.get("세부자산군", row.get("자산군", "")) or "").strip()
+        market = str(row.get("시장", "") or "").strip()
+
+        label_parts = []
+        if ticker:
+            label_parts.append(ticker)
+        if name and name != ticker:
+            label_parts.append(name)
+        meta_parts = [value for value in [asset_class, market] if value]
+        if meta_parts:
+            label_parts.append(f"[{' / '.join(meta_parts)}]")
+
+        rows.append(
+            {
+                "id": asset_id,
+                "label": " ".join(label_parts).strip() or f"자산 {asset_id}",
+                "display_order": int(row.get("display_order") if pd.notna(row.get("display_order")) else idx),
+            }
+        )
+
+    order_df = pd.DataFrame(rows, columns=["id", "label", "display_order"])
+    if order_df.empty:
+        return order_df
+    return order_df.sort_values(["display_order", "label"], kind="stable").reset_index(drop=True)
+
+
+def save_asset_display_order(ordered_ids: list[str]) -> int:
+    order_items = [
+        {"row_id": str(asset_id), "sort_order": display_order}
+        for display_order, asset_id in enumerate(ordered_ids)
+        if str(asset_id).strip()
+    ]
+    db.backup_database("before_mobile_holdings_order_save")
+    return update_holdings_sort_order(order_items)
+
+
+def clear_asset_cache_if_exists() -> None:
+    for key in [
+        "assets_df",
+        "holdings_df",
+        "asset_order_df",
+        "mobile_holdings_order_ids",
+        "holdings_sortable_order",
+        "mobile_holdings_sortable_order",
+        "desktop_holdings_sortable_order",
+    ]:
+        st.session_state.pop(key, None)
+    sync_after_holdings_mutation()
 
 
 def build_asset_order_items(assets_df: pd.DataFrame | None) -> list[dict[str, str]]:

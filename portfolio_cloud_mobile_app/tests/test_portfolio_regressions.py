@@ -109,6 +109,13 @@ class AssetOrderTests(unittest.TestCase):
         items = app.build_asset_order_items(holdings)
         self.assertEqual(len(items), len(holdings))
 
+    def test_build_asset_order_df_includes_debug_ui_rows(self):
+        holdings = sample_holdings()
+        order_df = app.build_asset_order_df(holdings)
+        self.assertEqual(list(order_df.columns), ["id", "label", "display_order"])
+        self.assertEqual(len(order_df), len(holdings))
+        self.assertEqual(order_df["display_order"].tolist(), list(range(len(order_df))))
+
     def test_zero_based_sort_order_is_preserved(self):
         holdings = sample_holdings().iloc[:3].copy()
         holdings["sort_order"] = [2, 1, 0]
