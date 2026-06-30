@@ -181,11 +181,11 @@ def normalize_holdings(df: pd.DataFrame | None) -> pd.DataFrame:
         normalized.insert(1, "sort_order", normalized["표시순서"] if "표시순서" in normalized.columns else range(1, len(normalized) + 1))
     normalized["sort_order"] = normalized["sort_order"].map(parse_number)
     normalized["표시순서"] = normalized["표시순서"].map(parse_number)
-    normalized["sort_order"] = normalized["sort_order"].where(normalized["sort_order"] > 0, normalized["표시순서"])
-    missing_order = normalized["sort_order"] <= 0
-    normalized.loc[missing_order, "sort_order"] = [idx + 1 for idx in range(int(missing_order.sum()))]
+    normalized["sort_order"] = normalized["sort_order"].where(normalized["sort_order"] >= 0, normalized["표시순서"])
+    missing_order = normalized["sort_order"] < 0
+    normalized.loc[missing_order, "sort_order"] = range(int(missing_order.sum()))
     normalized = normalized.sort_values("sort_order", kind="stable").reset_index(drop=True)
-    normalized["sort_order"] = range(1, len(normalized) + 1)
+    normalized["sort_order"] = range(len(normalized))
     normalized["표시순서"] = normalized["sort_order"]
     normalized["세부자산군"] = normalized["세부자산군"].fillna("").astype(str).map(normalize_sub_asset_class)
     normalized["자산군"] = normalized["세부자산군"]

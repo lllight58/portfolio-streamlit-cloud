@@ -2,6 +2,7 @@ import unittest
 
 import pandas as pd
 
+import app
 from src.portfolio_calculator import HOLDINGS_COLUMNS, sample_holdings
 from src.repositories.holdings_repository import upsert_holding_row
 from src.symbol_resolver import lookup_security
@@ -91,6 +92,28 @@ class HoldingUpsertTests(unittest.TestCase):
             },
         )
         self.assertEqual(list(updated.columns), HOLDINGS_COLUMNS)
+
+
+class AssetOrderTests(unittest.TestCase):
+    def test_build_asset_order_items_includes_all_holdings(self):
+        holdings = sample_holdings()
+        items = app.build_asset_order_items(holdings)
+        self.assertEqual(len(items), len(holdings))
+        self.assertTrue(all(item["id"] for item in items))
+        self.assertTrue(all(item["label"] for item in items))
+
+    def test_build_asset_order_items_handles_missing_order_values(self):
+        holdings = sample_holdings()
+        holdings["sort_order"] = None
+        holdings["표시순서"] = None
+        items = app.build_asset_order_items(holdings)
+        self.assertEqual(len(items), len(holdings))
+
+    def test_zero_based_sort_order_is_preserved(self):
+        holdings = sample_holdings().iloc[:3].copy()
+        holdings["sort_order"] = [2, 1, 0]
+        normalized = app.normalize_holdings(holdings)
+        self.assertEqual(list(normalized["sort_order"]), [0, 1, 2])
 
 
 if __name__ == "__main__":

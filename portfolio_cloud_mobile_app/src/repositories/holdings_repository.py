@@ -35,9 +35,9 @@ def ensure_row_ids() -> int:
         changed = True
 
     sort_values = holdings["sort_order"].map(parse_number)
-    missing_sort = sort_values <= 0
+    missing_sort = sort_values < 0
     if missing_sort.any():
-        holdings.loc[missing_sort, "sort_order"] = [idx + 1 for idx in range(int(missing_sort.sum()))]
+        holdings.loc[missing_sort, "sort_order"] = range(int(missing_sort.sum()))
         changed = True
 
     if "표시순서" not in holdings.columns or not holdings["표시순서"].equals(holdings["sort_order"]):
@@ -141,8 +141,9 @@ def update_holdings_sort_order(order_items: list[dict]) -> int:
     for idx, row in holdings.iterrows():
         row_id = str(row.get("row_id", "")).strip()
         if row_id in order_map:
-            holdings.at[idx, "sort_order"] = order_map[row_id]
-            holdings.at[idx, "표시순서"] = order_map[row_id]
+            new_order = max(0, order_map[row_id])
+            holdings.at[idx, "sort_order"] = new_order
+            holdings.at[idx, "표시순서"] = new_order
             updated += 1
 
     if updated:

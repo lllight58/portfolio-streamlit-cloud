@@ -692,7 +692,7 @@ def show_mobile_holdings_editor() -> None:
                 st.rerun()
 
     with st.expander("자산 표시 순서 변경", expanded=False):
-        render_holdings_order_controls(holdings)
+        render_holdings_order_controls(holdings, context="mobile")
 
 
 def mobile_holding_labels(holdings: pd.DataFrame) -> dict[str, int]:
@@ -1052,7 +1052,7 @@ def show_holdings_editor() -> None:
         st.rerun()
 
     render_holdings_delete_controls(holdings)
-    render_holdings_order_controls(holdings)
+    render_holdings_order_controls(holdings, context="desktop")
 
 
 def render_holdings_delete_controls(holdings: pd.DataFrame) -> None:
@@ -1096,41 +1096,29 @@ def render_holdings_delete_controls(holdings: pd.DataFrame) -> None:
             st.info("삭제를 취소했습니다.")
 
 
-def render_holdings_order_controls(holdings: pd.DataFrame) -> None:
+def render_holdings_order_controls(holdings: pd.DataFrame, context: str = "desktop") -> None:
     st.divider()
     st.subheader("자산 표시 순서 변경")
     st.caption("자산 표시 순서를 바꾸고 싶으면 아래 항목을 드래그해서 원하는 순서로 배치한 뒤, 순서 저장 버튼을 누르세요.")
-    if holdings.empty:
-        st.info("순서를 변경할 자산이 없습니다.")
-        return
-    if sort_items is None:
-        st.warning("드래그 앤 드롭 순서 변경을 사용하려면 `streamlit-sortables` 패키지가 필요합니다.")
+    order_items = build_asset_order_items(holdings)
+    if not order_items:
+        render_asset_order_empty_diagnostics(holdings)
         return
 
-    label_to_row_id = holding_label_map(holdings)
-    sorted_labels = sort_items(
-        list(label_to_row_id.keys()),
-        direction="vertical",
-        key="holdings_sortable_order",
-        custom_style="""
-            .sortable-component { padding: 0; }
-            .sortable-container { gap: 4px; }
-            .sortable-item {
-                min-height: 34px;
-                padding: 6px 10px;
-                font-size: 13px;
-                line-height: 1.2;
-                border-radius: 6px;
-                border: 1px solid #d7dde5;
-            }
-        """,
-    )
+    if len(order_items) == 1:
+        st.info("순서 변경할 자산이 1개뿐입니다.")
+        st.markdown(f"- {order_items[0]['label']}")
+        return
+
+    sorted_items = render_asset_order_sortable(order_items, context)
+    if sorted_items is None:
+        sorted_items = render_asset_order_fallback(order_items, context)
 
     if st.button("순서 저장", use_container_width=True):
         order_items = [
-            {"row_id": label_to_row_id[label], "sort_order": index}
-            for index, label in enumerate(sorted_labels, start=1)
-            if label in label_to_row_id
+            {"row_id": item["id"], "sort_order": index}
+            for index, item in enumerate(sorted_items)
+            if item.get("id")
         ]
         db.backup_database("before_holdings_order_save")
         updated_count = update_holdings_sort_order(order_items)
@@ -1138,6 +1126,117 @@ def render_holdings_order_controls(holdings: pd.DataFrame) -> None:
         sync_after_holdings_mutation()
         st.session_state["holdings_editor_message"] = f"자산 표시 순서를 저장했습니다. ({updated_count}건)"
         st.rerun()
+
+
+def build_asset_order_items(assets_df: pd.DataFrame | None) -> list[dict[str, str]]:
+    if assets_df is None or assets_df.empty:
+        return []
+
+    df = normalize_holdings(assets_df).copy()
+    if "sort_order" not in df.columns:
+        df["sort_order"] = range(len(df))
+    sort_values = df["sort_order"].map(parse_number)
+    df["sort_order"] = sort_values.where(sort_values >= 0, range(len(df)))
+
+    sort_cols = ["sort_order"]
+    for column in ["세부자산군", "티커 또는 종목코드", "종목명"]:
+        if column in df.columns:
+            sort_cols.append(column)
+    df = df.sort_values(sort_cols, kind="stable").reset_index(drop=True)
+
+    items: list[dict[str, str]] = []
+    seen_labels: dict[str, int] = {}
+    for index, row in df.iterrows():
+        row_id = str(row.get("row_id", "") or "").strip()
+        if not row_id:
+            row_id = f"row-{index}"
+        ticker = str(row.get("티커 또는 종목코드", "") or "").strip()
+        name = str(row.get("종목명", "") or "").strip()
+        asset_class = str(row.get("세부자산군", row.get("자산군", "")) or "").strip()
+        market = str(row.get("시장", "") or "").strip()
+
+        label_parts = []
+        if ticker:
+            label_parts.append(ticker)
+        if name and name != ticker:
+            label_parts.append(name)
+        suffix_parts = [value for value in [asset_class, market] if value]
+        if suffix_parts:
+            label_parts.append(f"[{' / '.join(suffix_parts)}]")
+        base_label = " ".join(label_parts).strip() or f"자산 {row_id}"
+
+        seen_labels[base_label] = seen_labels.get(base_label, 0) + 1
+        label = base_label if seen_labels[base_label] == 1 else f"{base_label} ({seen_labels[base_label]})"
+        items.append({"id": row_id, "label": label})
+    return items
+
+
+def render_asset_order_sortable(order_items: list[dict[str, str]], context: str) -> list[dict[str, str]] | None:
+    if sort_items is None:
+        st.warning("드래그 앤 드롭 컴포넌트를 사용할 수 없어 위/아래 이동 방식으로 표시합니다.")
+        return None
+
+    labels = [item["label"] for item in order_items]
+    label_to_item = {item["label"]: item for item in order_items}
+    sorted_labels = sort_items(
+        labels,
+        direction="vertical",
+        key=f"{context}_holdings_sortable_order",
+        custom_style="""
+            .sortable-component { padding: 0; min-height: 48px; display: block; }
+            .sortable-container { gap: 6px; min-height: 48px; overflow: visible; }
+            .sortable-item {
+                min-height: 40px;
+                padding: 8px 10px;
+                font-size: 13px;
+                line-height: 1.25;
+                border-radius: 6px;
+                border: 1px solid #d7dde5;
+                background: #fff;
+                color: #1f2937;
+            }
+        """,
+    )
+    if not sorted_labels:
+        st.warning("드래그 목록이 비어 있습니다. 아래 이동 버튼으로 순서를 변경하세요.")
+        return None
+    return [label_to_item[label] for label in sorted_labels if label in label_to_item]
+
+
+def render_asset_order_fallback(order_items: list[dict[str, str]], context: str) -> list[dict[str, str]]:
+    state_key = f"{context}_holdings_order_ids"
+    item_by_id = {item["id"]: item for item in order_items}
+    current_ids = [item["id"] for item in order_items]
+    state_ids = [row_id for row_id in st.session_state.get(state_key, current_ids) if row_id in item_by_id]
+    missing_ids = [row_id for row_id in current_ids if row_id not in state_ids]
+    ordered_ids = state_ids + missing_ids
+    st.session_state[state_key] = ordered_ids
+
+    for index, row_id in enumerate(ordered_ids):
+        item = item_by_id[row_id]
+        cols = st.columns([0.14, 0.14, 0.72])
+        if cols[0].button("↑", key=f"{context}_order_up_{row_id}", disabled=index == 0):
+            ordered_ids[index - 1], ordered_ids[index] = ordered_ids[index], ordered_ids[index - 1]
+            st.session_state[state_key] = ordered_ids
+            st.rerun()
+        if cols[1].button("↓", key=f"{context}_order_down_{row_id}", disabled=index == len(ordered_ids) - 1):
+            ordered_ids[index + 1], ordered_ids[index] = ordered_ids[index], ordered_ids[index + 1]
+            st.session_state[state_key] = ordered_ids
+            st.rerun()
+        cols[2].markdown(f"{index + 1}. {item['label']}")
+    return [item_by_id[row_id] for row_id in ordered_ids]
+
+
+def render_asset_order_empty_diagnostics(holdings: pd.DataFrame | None) -> None:
+    total_count = 0 if holdings is None else len(holdings)
+    normalized_count = 0
+    if holdings is not None and not holdings.empty:
+        normalized_count = len(normalize_holdings(holdings))
+    st.info("표시할 자산이 없습니다.")
+    st.caption(f"현재 불러온 전체 자산 수: {total_count}")
+    st.caption(f"필터 적용 후 자산 수: {normalized_count}")
+    st.caption("사용 중인 계좌 필터: 없음")
+    st.caption("사용 중인 자산군 필터: 없음")
 
 
 def holding_label_map(holdings: pd.DataFrame) -> dict[str, str]:
