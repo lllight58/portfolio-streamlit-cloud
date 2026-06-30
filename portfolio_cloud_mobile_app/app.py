@@ -47,11 +47,11 @@ from src.portfolio_calculator import (
 )
 from src.price_fetcher import fetch_all_prices
 from src.price_fetcher import fetch_benchmark_return
+from src.repositories import holdings_repository as holdings_repo
 from src.repositories.holdings_repository import (
     delete_holdings_by_selectors,
     delete_holdings_by_row_ids,
     ensure_row_ids,
-    upsert_holding_row,
     update_holdings_sort_order,
 )
 from src.symbol_resolver import SecurityLookupResult, lookup_security, normalize_symbol
@@ -289,6 +289,47 @@ def clear_cached_tables(*table_names: str) -> None:
 def sync_after_holdings_mutation(*extra_tables: str) -> None:
     clear_cached_tables("holdings", *extra_tables)
     st.session_state.pop("holdings_editor_df", None)
+
+
+def save_holding_row(holdings: pd.DataFrame, row_id: str, values: dict[str, object]) -> tuple[pd.DataFrame, str]:
+    upsert_func = getattr(holdings_repo, "upsert_holding_row", None)
+    if callable(upsert_func):
+        return upsert_func(holdings, row_id, values)
+    return upsert_holding_row_fallback(holdings, row_id, values)
+
+
+def upsert_holding_row_fallback(holdings: pd.DataFrame, row_id: str, values: dict[str, object]) -> tuple[pd.DataFrame, str]:
+    normalized = normalize_holdings(holdings)
+    target = materialize_holding_values(values)
+    target_row_id = str(row_id or "").strip()
+    row_ids = normalized["row_id"].fillna("").astype(str)
+
+    if target_row_id and target_row_id in set(row_ids):
+        mask = row_ids == target_row_id
+        for column, value in target.items():
+            normalized.loc[mask, column] = value
+        saved_row_id = target_row_id
+    else:
+        next_order = int(normalized["표시순서"].map(parse_number).max() or 0) + 1 if not normalized.empty else 1
+        saved_row_id = f"mobile-{datetime.now():%Y%m%d%H%M%S%f}"
+        target.update({"표시순서": next_order, "sort_order": next_order, "row_id": saved_row_id})
+        normalized = pd.concat([normalized, pd.DataFrame([target])], ignore_index=True)
+
+    return normalize_holdings(normalized), saved_row_id
+
+
+def materialize_holding_values(values: dict[str, object]) -> dict[str, object]:
+    target = values.copy()
+    sub_asset_class = str(target.get("세부자산군", target.get("자산군", "")) or "")
+    target["세부자산군"] = sub_asset_class
+    target["상위자산군"] = infer_major_asset_class(sub_asset_class)
+    target["자산군"] = sub_asset_class
+    target["새빛_보유수량"] = parse_number(target.get("새빛_보유수량"))
+    target["희주_보유수량"] = parse_number(target.get("희주_보유수량"))
+    target["합산_보유수량"] = target["새빛_보유수량"] + target["희주_보유수량"]
+    target["보유수량"] = target["합산_보유수량"]
+    target["평균단가"] = parse_number(target.get("평균단가"))
+    return target
 
 
 PLOTLY_CONFIG = {
@@ -743,7 +784,7 @@ def render_mobile_holding_form(holdings: pd.DataFrame, row: pd.Series | None, ke
     if not symbol:
         st.error("티커_또는_종목코드를 입력하세요.")
         return
-    updated, saved_row_id = upsert_holding_row(
+    updated, saved_row_id = save_holding_row(
         holdings,
         str(row.get("row_id", "") or ""),
         {
@@ -768,7 +809,7 @@ def render_mobile_holding_form(holdings: pd.DataFrame, row: pd.Series | None, ke
 
 
 def upsert_mobile_holding(holdings: pd.DataFrame, row_id: str, values: dict[str, object]) -> pd.DataFrame:
-    updated, _ = upsert_holding_row(holdings, row_id, values)
+    updated, _ = save_holding_row(holdings, row_id, values)
     return prepare_holdings(updated)
 
 
