@@ -1827,19 +1827,25 @@ def resolve_security_name_fast(market: str, symbol: str, sub_asset_class: str, n
     return ""
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
 def lookup_security_remote(market: str, symbol: str, sub_asset_class: str) -> SecurityLookupResult:
+    result = lookup_security_remote_cached(market, symbol, sub_asset_class)
+    return SecurityLookupResult(*result)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def lookup_security_remote_cached(market: str, symbol: str, sub_asset_class: str) -> tuple[str, str, str, bool, str, str]:
     normalized_market = str(market or "").strip().upper()
     normalized_symbol = normalize_symbol(normalized_market, symbol)
     if not normalized_symbol:
-        return SecurityLookupResult(normalized_market, "", "", False, "input", "empty_symbol")
+        return normalized_market, "", "", False, "input", "empty_symbol"
     fast = resolve_security_name_fast(normalized_market, normalized_symbol, sub_asset_class)
     if fast:
-        return SecurityLookupResult(normalized_market, normalized_symbol, fast, True, "local_cache")
+        return normalized_market, normalized_symbol, fast, True, "local_cache", ""
     try:
-        return lookup_security(normalized_market, normalized_symbol, sub_asset_class, sub_asset_class)
+        result = lookup_security(normalized_market, normalized_symbol, sub_asset_class, sub_asset_class)
+        return result.market, result.symbol, result.name, result.success, result.source, result.reason
     except Exception as exc:
-        return SecurityLookupResult(normalized_market, normalized_symbol, "", False, "lookup_security", type(exc).__name__)
+        return normalized_market, normalized_symbol, "", False, "lookup_security", type(exc).__name__
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
