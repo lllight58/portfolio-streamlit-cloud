@@ -114,6 +114,7 @@ st.set_page_config(page_title="포트폴리오", page_icon=str(APP_DIR / "assets
 def main() -> None:
     apply_mobile_style()
     require_app_password()
+    ensure_benchmark_return_method_state()
     st.title(APP_TITLE)
     init_error = None
     try:
@@ -220,6 +221,14 @@ def app_secret(key: str) -> str:
     if key == "APP_PASSWORD":
         return DEFAULT_APP_PASSWORD
     return ""
+
+
+def ensure_benchmark_return_method_state() -> None:
+    if st.session_state.get("benchmark_return_method") == BENCHMARK_RETURN_METHOD:
+        return
+    st.session_state.pop("benchmark_return", None)
+    st.session_state.pop("benchmark_error", None)
+    st.session_state["benchmark_return_method"] = BENCHMARK_RETURN_METHOD
 
 
 def render_mobile_nav() -> str:
