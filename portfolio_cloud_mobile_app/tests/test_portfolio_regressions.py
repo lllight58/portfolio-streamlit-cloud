@@ -8,6 +8,12 @@ import pandas as pd
 import app
 from src import db
 from src.portfolio_calculator import HOLDINGS_COLUMNS, sample_holdings
+from src.price_fetcher import (
+    DIVIDEND_TAX_RATE,
+    build_after_tax_total_return_index,
+    build_weighted_benchmark_after_tax_tr,
+    calculate_calendar_year_return_from_index,
+)
 from src.repositories.holdings_repository import upsert_holding_row
 from src.symbol_resolver import lookup_security
 
@@ -301,6 +307,54 @@ class AssetOrderTests(unittest.TestCase):
         holdings["sort_order"] = [2, 1, 0]
         normalized = app.normalize_holdings(holdings)
         self.assertEqual(list(normalized["sort_order"]), [0, 1, 2])
+
+
+class BenchmarkAfterTaxReturnTests(unittest.TestCase):
+    def test_dividend_after_tax_total_return_is_between_price_and_pretax_return(self):
+        history = pd.DataFrame(
+            {
+                "Close": [100.0, 100.0, 102.0],
+                "Dividends": [0.0, 10.0, 0.0],
+            },
+            index=pd.to_datetime(["2026-01-02", "2026-01-03", "2026-01-04"]),
+        )
+
+        tr = build_after_tax_total_return_index(history)
+        price_return = history["Close"].iloc[-1] / history["Close"].iloc[0] - 1
+        pretax_return = ((100.0 + 10.0) / 100.0) * (102.0 / 100.0) - 1
+        after_tax_return = tr["after_tax_tr_index"].iloc[-1] - 1
+
+        self.assertGreater(after_tax_return, price_return)
+        self.assertLess(after_tax_return, pretax_return)
+        self.assertAlmostEqual(after_tax_return, (1 + 10.0 * (1 - DIVIDEND_TAX_RATE) / 100.0) * 1.02 - 1)
+
+    def test_no_dividend_total_return_matches_price_return(self):
+        history = pd.DataFrame(
+            {"Close": [200.0, 204.0, 210.0], "Dividends": [0.0, 0.0, 0.0]},
+            index=pd.to_datetime(["2026-01-02", "2026-01-03", "2026-01-04"]),
+        )
+
+        tr = build_after_tax_total_return_index(history)
+        self.assertAlmostEqual(tr["after_tax_tr_index"].iloc[-1] - 1, 210.0 / 200.0 - 1)
+
+    def test_weighted_benchmark_compounds_daily_weighted_returns(self):
+        returns = {
+            "VT": pd.Series([0.0, 0.10, 0.00], index=pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"])),
+            "BND": pd.Series([0.0, 0.00, 0.04], index=pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"])),
+            "GLD": pd.Series([0.0, 0.02, 0.02], index=pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"])),
+        }
+
+        benchmark = build_weighted_benchmark_after_tax_tr(returns, {"VT": 0.6, "BND": 0.3, "GLD": 0.1})
+        expected = (1 + 0.062) * (1 + 0.014) - 1
+        self.assertAlmostEqual(benchmark["benchmark_after_tax_tr_index"].iloc[-1] - 1, expected)
+
+    def test_calendar_year_return_uses_prior_year_end_baseline(self):
+        tr_index = pd.Series(
+            [1.00, 1.10, 1.21],
+            index=pd.to_datetime(["2025-12-31", "2026-01-02", "2026-12-31"]),
+        )
+
+        self.assertAlmostEqual(calculate_calendar_year_return_from_index(tr_index, 2026), 0.21)
 
 
 if __name__ == "__main__":

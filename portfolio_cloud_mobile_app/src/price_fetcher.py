@@ -11,6 +11,8 @@ from src.formatters import infer_currency
 from src.symbol_resolver import crypto_yfinance_symbol, is_crypto_route, normalize_symbol
 
 APP_TIMEZONE = ZoneInfo("Asia/Seoul")
+DIVIDEND_TAX_RATE = 0.154
+BENCHMARK_RETURN_METHOD = "after_tax_total_return_v1"
 
 
 def now_text() -> str:
@@ -110,6 +112,196 @@ def fetch_us_ytd_return(symbol: str, year: int | None = None) -> float:
     return (end_price - start_price) / start_price
 
 
+def fetch_benchmark_after_tax_total_return(
+    stock_symbol: str = "VT",
+    bond_symbol: str = "BND",
+    gold_symbol: str = "GLD",
+    stock_weight: float = 0.6,
+    bond_weight: float = 0.3,
+    gold_weight: float = 0.1,
+    year: int | None = None,
+) -> tuple[float | None, str | None]:
+    """
+    벤치마크 수익률을 배당금 15.4% 세금 차감 후 재투자한 Total Return 기준으로 계산한다.
+
+    Yahoo Finance의 Adj Close는 세전 배당 재투자 효과가 섞여 있으므로 사용하지 않는다.
+    history(auto_adjust=False, actions=True)의 Close와 Dividends를 이용해 각 구성 ETF의
+    일별 세후 total return을 먼저 만든 뒤 일별 수익률을 가중합한다.
+    """
+    try:
+        symbols = {
+            normalize_symbol("US", stock_symbol): float(stock_weight or 0),
+            normalize_symbol("US", bond_symbol): float(bond_weight or 0),
+            normalize_symbol("US", gold_symbol): float(gold_weight or 0),
+        }
+        symbols = {symbol: weight for symbol, weight in symbols.items() if symbol and weight > 0}
+        if not symbols:
+            return None, "벤치마크 비중 또는 티커가 비어 있습니다."
+
+        target_year = year or datetime.now(APP_TIMEZONE).year
+        start, end = benchmark_history_window(target_year, year is None)
+        daily_returns_by_ticker: dict[str, pd.Series] = {}
+        missing: list[str] = []
+
+        for symbol in symbols:
+            history = fetch_benchmark_price_history(symbol, start, end)
+            if history.empty:
+                missing.append(symbol)
+                continue
+            tr_df = build_after_tax_total_return_index(history)
+            returns = tr_df["after_tax_total_return"].dropna()
+            if returns.empty:
+                missing.append(symbol)
+                continue
+            daily_returns_by_ticker[symbol] = returns
+
+        if not daily_returns_by_ticker:
+            return None, f"{', '.join(symbols.keys())} 가격/배당 데이터를 가져오지 못했습니다."
+
+        benchmark = build_weighted_benchmark_after_tax_tr(daily_returns_by_ticker, symbols)
+        value = calculate_calendar_year_return_from_index(
+            benchmark["benchmark_after_tax_tr_index"],
+            target_year,
+        )
+        if value is None:
+            return None, f"{target_year}년 벤치마크 세후 Total Return 데이터를 계산할 수 없습니다."
+        if missing:
+            return value, f"일부 벤치마크 데이터 누락: {', '.join(missing)}"
+        return value, None
+    except Exception as exc:
+        return None, f"벤치마크 세후 Total Return 조회 실패: {exc}"
+
+
+def benchmark_history_window(target_year: int, is_ytd: bool) -> tuple[datetime, datetime]:
+    start = datetime(target_year - 1, 12, 15)
+    if is_ytd:
+        end = datetime.now(APP_TIMEZONE).replace(tzinfo=None) + timedelta(days=1)
+    else:
+        end = datetime(target_year + 1, 1, 10)
+    return start, end
+
+
+def fetch_benchmark_price_history(symbol: str, start: datetime, end: datetime) -> pd.DataFrame:
+    ticker = yf.Ticker(normalize_symbol("US", symbol))
+    history = ticker.history(
+        start=start.strftime("%Y-%m-%d"),
+        end=end.strftime("%Y-%m-%d"),
+        interval="1d",
+        auto_adjust=False,
+        actions=True,
+    )
+    return history if history is not None else pd.DataFrame()
+
+
+def build_after_tax_total_return_index(
+    price_df: pd.DataFrame,
+    dividend_col: str = "Dividends",
+    dividend_tax_rate: float = DIVIDEND_TAX_RATE,
+) -> pd.DataFrame:
+    """Close와 Dividends로 일별 세후 total return index를 만든다."""
+    if price_df is None or price_df.empty:
+        return pd.DataFrame(columns=["after_tax_total_return", "after_tax_tr_index"])
+
+    df = price_df.copy().sort_index()
+    if "Close" not in df.columns:
+        raise ValueError("Close column is required")
+    if dividend_col not in df.columns:
+        df[dividend_col] = 0.0
+
+    df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
+    df[dividend_col] = pd.to_numeric(df[dividend_col], errors="coerce").fillna(0.0)
+    df = df.dropna(subset=["Close"])
+    df = df[df["Close"] > 0].copy()
+    if df.empty:
+        return pd.DataFrame(columns=["after_tax_total_return", "after_tax_tr_index"])
+
+    df["prev_close"] = df["Close"].shift(1)
+    df["after_tax_dividend"] = df[dividend_col] * (1 - dividend_tax_rate)
+    df["after_tax_total_return"] = (df["Close"] + df["after_tax_dividend"]) / df["prev_close"] - 1
+    df.loc[df["prev_close"].isna() | (df["prev_close"] <= 0), "after_tax_total_return"] = 0.0
+    df["after_tax_total_return"] = df["after_tax_total_return"].replace([float("inf"), float("-inf")], 0.0).fillna(0.0)
+    df["after_tax_tr_index"] = (1 + df["after_tax_total_return"]).cumprod()
+    return df
+
+
+def build_weighted_benchmark_after_tax_tr(
+    daily_returns_by_ticker: dict[str, pd.Series],
+    weights: dict[str, float],
+) -> pd.DataFrame:
+    returns_df = pd.DataFrame(daily_returns_by_ticker).sort_index()
+    if returns_df.empty:
+        return pd.DataFrame(columns=["benchmark_after_tax_daily_return", "benchmark_after_tax_tr_index"])
+    returns_df = returns_df.fillna(0.0)
+
+    usable_weights = {ticker: float(weights.get(ticker, 0)) for ticker in returns_df.columns}
+    weight_sum = sum(weight for weight in usable_weights.values() if weight > 0)
+    if weight_sum <= 0:
+        raise ValueError("벤치마크 비중 합계가 0입니다.")
+
+    benchmark_daily_return = pd.Series(0.0, index=returns_df.index)
+    for ticker, weight in usable_weights.items():
+        if weight > 0:
+            benchmark_daily_return += returns_df[ticker] * (weight / weight_sum)
+
+    return pd.DataFrame(
+        {
+            "benchmark_after_tax_daily_return": benchmark_daily_return,
+            "benchmark_after_tax_tr_index": (1 + benchmark_daily_return).cumprod(),
+        }
+    )
+
+
+def calculate_ytd_return(tr_index: pd.Series) -> float | None:
+    current_year = datetime.now(APP_TIMEZONE).year
+    return calculate_calendar_year_return_from_index(tr_index, current_year)
+
+
+def calculate_calendar_year_returns(tr_index: pd.Series) -> dict[int, float]:
+    tr_index = normalize_tr_index(tr_index)
+    if tr_index.empty:
+        return {}
+
+    years = sorted({int(value) for value in tr_index.index.year})
+    result: dict[int, float] = {}
+    for year in years:
+        value = calculate_calendar_year_return_from_index(tr_index, year)
+        if value is not None:
+            result[year] = value
+    return result
+
+
+def calculate_calendar_year_return_from_index(tr_index: pd.Series, year: int) -> float | None:
+    tr_index = normalize_tr_index(tr_index)
+    if tr_index.empty:
+        return None
+
+    end_candidates = tr_index[tr_index.index.year == int(year)]
+    if end_candidates.empty:
+        return None
+
+    prior_candidates = tr_index[tr_index.index < pd.Timestamp(year=int(year), month=1, day=1, tz=tr_index.index.tz)]
+    if prior_candidates.empty:
+        start_value = float(end_candidates.iloc[0])
+    else:
+        start_value = float(prior_candidates.iloc[-1])
+    end_value = float(end_candidates.iloc[-1])
+    if start_value <= 0:
+        return None
+    return end_value / start_value - 1
+
+
+def normalize_tr_index(tr_index: pd.Series) -> pd.Series:
+    if tr_index is None or tr_index.empty:
+        return pd.Series(dtype=float)
+    series = pd.to_numeric(tr_index.copy(), errors="coerce").dropna().sort_index()
+    if not isinstance(series.index, pd.DatetimeIndex):
+        series.index = pd.to_datetime(series.index, errors="coerce")
+        series = series[~series.index.isna()]
+    if isinstance(series.index, pd.DatetimeIndex) and series.index.tz is not None:
+        series.index = series.index.tz_convert(None)
+    return series
+
+
 def fetch_benchmark_return(
     stock_symbol: str = "VT",
     bond_symbol: str = "BND",
@@ -119,13 +311,16 @@ def fetch_benchmark_return(
     gold_weight: float = 0.1,
     year: int | None = None,
 ) -> tuple[float | None, str | None]:
-    try:
-        stock_return = fetch_us_ytd_return(stock_symbol, year)
-        bond_return = fetch_us_ytd_return(bond_symbol, year)
-        gold_return = fetch_us_ytd_return(gold_symbol, year)
-        return stock_return * stock_weight + bond_return * bond_weight + gold_return * gold_weight, None
-    except Exception:
-        return None, f"{stock_symbol}, {bond_symbol}, {gold_symbol} 가격 데이터를 가져오지 못했습니다."
+    """호환용 wrapper. 실제 계산 기준은 세후 배당 재투자 Total Return이다."""
+    return fetch_benchmark_after_tax_total_return(
+        stock_symbol,
+        bond_symbol,
+        gold_symbol,
+        stock_weight,
+        bond_weight,
+        gold_weight,
+        year=year,
+    )
 
 
 def fetch_kr_price(code: str) -> float:

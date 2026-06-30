@@ -48,8 +48,12 @@ from src.portfolio_calculator import (
     normalize_holdings,
     normalize_sub_asset_class,
 )
-from src.price_fetcher import fetch_all_prices
-from src.price_fetcher import fetch_benchmark_return
+from src.price_fetcher import (
+    BENCHMARK_RETURN_METHOD,
+    DIVIDEND_TAX_RATE,
+    fetch_all_prices,
+    fetch_benchmark_after_tax_total_return,
+)
 from src.repositories import holdings_repository as holdings_repo
 from src.repositories.holdings_repository import (
     delete_holdings_by_selectors,
@@ -68,6 +72,7 @@ MOBILE_MENUS = ["홈", "자산", "매수", "원금", "가격", "공시", "설정
 DESKTOP_MENUS = ["대시보드", "자산 입력", "추가매수", "투자원금", "시세 업데이트", "주요 공시", "설정", "Excel 가져오기/내보내기"]
 QUANTITY_COLUMNS = ["새빛_보유수량", "희주_보유수량", "합산_보유수량", "보유수량"]
 QUANTITY_RAW_PREFIX = "__raw_"
+BENCHMARK_RETURN_NOTE = "기준: 배당금 15.4% 세금 차감 후 재투자한 Total Return"
 PROFIT_COLOR = "#D93025"
 LOSS_COLOR = "#1A73E8"
 NEUTRAL_COLOR = "#333333"
@@ -435,11 +440,12 @@ def show_dashboard() -> None:
         ("평가손익", format_krw(profit), format_percent(return_rate)),
         ("누적수익률", format_percent(return_rate), None),
         ("올해 수익률", format_percent(yearly_return), None),
-        ("벤치마크 올해 수익률", format_percent(benchmark_return) if benchmark_return is not None else "미조회", None),
+        ("벤치마크 YTD 수익률", format_percent(benchmark_return) if benchmark_return is not None else "미조회", None),
         ("새빛 계좌 총 평가금액", format_krw(float(calculated.get("새빛_평가금액", pd.Series(dtype=float)).sum())), None),
         ("희주 계좌 총 평가금액", format_krw(float(calculated.get("희주_평가금액", pd.Series(dtype=float)).sum())), None),
     ]:
         st.metric(label, value, delta=delta)
+    st.caption(BENCHMARK_RETURN_NOTE)
     if benchmark_error:
         st.caption(benchmark_error)
     if st.button("벤치마크 올해 수익률 조회", use_container_width=True):
@@ -500,12 +506,13 @@ def show_mobile_dashboard() -> None:
         ("평가손익", format_krw(profit), profit),
         ("누적수익률", format_percent(return_rate), return_rate),
         ("올해 수익률", format_percent(yearly_return), yearly_return),
-        ("벤치마크 올해 수익률", format_percent(benchmark_return) if benchmark_return is not None else "미조회", benchmark_return),
+        ("벤치마크 YTD 수익률", format_percent(benchmark_return) if benchmark_return is not None else "미조회", benchmark_return),
         ("새빛 계좌", format_krw(saebit_value), None),
         ("희주 계좌", format_krw(heeju_value), None),
     ]
     render_mobile_metric_grid(metrics)
     st.caption(f"벤치마크: {benchmark_name}")
+    st.caption(BENCHMARK_RETURN_NOTE)
     if benchmark_error:
         st.caption(benchmark_error)
     if st.button("벤치마크 올해 수익률 조회", use_container_width=True):
@@ -2557,6 +2564,7 @@ def render_return_history_section(
         return
     with st.spinner("연도별 수익률을 계산하는 중입니다."):
         history = build_return_history_table(snapshots, current_value, cumulative_return, settings_values)
+    st.caption("※ 벤치마크 수익률은 가격 수익률이 아니라 배당금 15.4% 세금 차감 후 재투자 기준 Total Return입니다.")
     st.dataframe(history, use_container_width=True, hide_index=True)
 
 
@@ -2577,6 +2585,8 @@ def build_return_history_table(
         parse_number(settings_values.get("주식 비중", "60")) / 100,
         parse_number(settings_values.get("채권 비중", "30")) / 100,
         parse_number(settings_values.get("금 비중", "10")) / 100,
+        BENCHMARK_RETURN_METHOD,
+        DIVIDEND_TAX_RATE,
     )
     rows = []
     cumulative_benchmark = 1.0
@@ -2649,10 +2659,12 @@ def annual_benchmark_returns_cached(
     stock_weight: float,
     bond_weight: float,
     gold_weight: float,
+    return_method: str = BENCHMARK_RETURN_METHOD,
+    dividend_tax_rate: float = DIVIDEND_TAX_RATE,
 ) -> dict[int, float | None]:
     returns: dict[int, float | None] = {}
     for year in years:
-        value, _ = fetch_benchmark_return(
+        value, _ = fetch_benchmark_after_tax_total_return(
             stock_symbol,
             bond_symbol,
             gold_symbol,
@@ -2673,7 +2685,7 @@ def fetch_dashboard_benchmark(settings_values: dict[str, str]) -> tuple[float | 
         stock_weight = parse_number(settings_values.get("주식 비중", "60")) / 100
         bond_weight = parse_number(settings_values.get("채권 비중", "30")) / 100
         gold_weight = parse_number(settings_values.get("금 비중", "10")) / 100
-        return fetch_benchmark_return(stock_symbol, bond_symbol, gold_symbol, stock_weight, bond_weight, gold_weight)
+        return fetch_benchmark_after_tax_total_return(stock_symbol, bond_symbol, gold_symbol, stock_weight, bond_weight, gold_weight)
     except Exception as exc:
         return None, f"벤치마크 조회 실패: {exc}"
 
