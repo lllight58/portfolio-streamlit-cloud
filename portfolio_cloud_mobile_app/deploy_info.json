@@ -1,5 +1,5 @@
 ﻿{
-    "deployed_at_kst":  "2026-06-30 12:51:57",
-    "message":  "Make benchmark imports tolerant of stale price_fetcher modules",
+    "deployed_at_kst":  "2026-06-30 12:59:35",
+    "message":  "Improve buy transaction revert display cards",
     "streamlit_url":  "https://lllight58-portfolio-stream-portfolio-cloud-mobile-appapp-6nltfr.streamlit.app/"
 }

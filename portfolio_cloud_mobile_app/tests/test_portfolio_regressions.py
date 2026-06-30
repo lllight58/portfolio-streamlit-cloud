@@ -279,6 +279,63 @@ class HoldingUpsertTests(unittest.TestCase):
             else:
                 os.environ["SQLITE_DB_PATH"] = old_sqlite_path
 
+    def test_buy_transaction_label_shows_ticker_name_and_readable_values(self):
+        tx = {
+            "거래ID": "tx-1",
+            "일괄반영ID": "batch-1",
+            "자산ID": "asset-1",
+            "티커": "BR",
+            "종목명": "Broadridge Financial Solutions",
+            "계좌": "새빛",
+            "수량": 1.3,
+            "단가": 13.25,
+            "금액": 17.225,
+            "통화": "USD",
+            "생성일시": "2026-06-30T12:39:38",
+            "되돌림여부": False,
+            "되돌림일시": "",
+            "되돌림사유": "",
+        }
+
+        label = app.format_buy_transaction_label(tx)
+
+        self.assertIn("BR · Broadridge Financial Solutions", label)
+        self.assertIn("새빛 계좌 | 1.3주 × 13.2500 USD = 17.23 USD", label)
+        self.assertIn("2026-06-30 12:39", label)
+        self.assertNotIn("T12:39:38", label)
+
+    def test_buy_transaction_label_falls_back_to_holding_when_batch_is_stored_as_ticker(self):
+        holdings = sample_holdings().iloc[:1].copy()
+        holding = holdings.iloc[0]
+        tx = pd.DataFrame(
+            [
+                {
+                    "거래ID": "tx-1",
+                    "일괄반영ID": "batch-1",
+                    "자산ID": str(holding.get("row_id", "")),
+                    "티커": "BATCH3",
+                    "종목명": "",
+                    "계좌": "희주",
+                    "수량": 3,
+                    "단가": 78500,
+                    "금액": 235500,
+                    "통화": "KRW",
+                    "생성일시": "2026-06-30T12:45:10",
+                    "되돌림여부": False,
+                    "되돌림일시": "",
+                    "되돌림사유": "",
+                }
+            ]
+        )
+
+        enriched = app.enrich_buy_transactions_with_holdings(tx, holdings).iloc[0].to_dict()
+        label = app.format_buy_transaction_label(enriched)
+
+        self.assertIn(str(holding["티커 또는 종목코드"]), label)
+        self.assertIn(str(holding["종목명"]), label)
+        self.assertIn("희주 계좌 | 3주 × 78,500 KRW = 235,500 KRW", label)
+        self.assertNotIn("BATCH3 ·", label)
+
 
 class AssetOrderTests(unittest.TestCase):
     def test_build_asset_order_items_includes_all_holdings(self):

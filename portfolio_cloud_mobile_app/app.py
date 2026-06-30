@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import html
 import hmac
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -1986,14 +1987,20 @@ def render_buy_transaction_revert_section(context: str) -> None:
         st.info("되돌릴 수 있는 최근 추가매수 내역이 없습니다.")
         return
 
-    options = {format_buy_transaction_label(tx): str(tx.get("거래ID", "")) for tx in recent_tx}
-    selected_label = st.radio(
+    apply_buy_transaction_card_style()
+    tx_by_id = {str(tx.get("거래ID", "")): tx for tx in recent_tx}
+    selected_tx_id = st.radio(
         "되돌릴 추가매수 내역을 1개만 선택하세요.",
-        list(options.keys()),
+        list(tx_by_id.keys()),
+        format_func=lambda tx_id: format_buy_transaction_label(tx_by_id.get(str(tx_id), {})),
         key=f"{context}_revert_buy_transaction_radio",
     )
-    selected_tx_id = options[selected_label]
-    st.warning("선택한 추가매수 1건만 되돌립니다. 여러 건 일괄 삭제는 지원하지 않습니다.")
+    selected_tx = tx_by_id.get(str(selected_tx_id), {})
+    st.warning(
+        "선택한 추가매수 1건을 되돌립니다:\n\n"
+        f"{format_buy_transaction_confirmation(selected_tx)}\n\n"
+        "여러 건 일괄 삭제는 지원하지 않습니다."
+    )
     confirm = st.checkbox(
         "선택한 추가매수 반영 내역을 되돌리는 것을 확인합니다.",
         key=f"{context}_confirm_revert_buy_transaction",
@@ -2023,7 +2030,54 @@ def load_recent_buy_transactions(limit: int = 5) -> list[dict]:
         return []
     active["_created_sort"] = pd.to_datetime(active["생성일시"], errors="coerce")
     active = active.sort_values(["_created_sort", "생성일시"], ascending=[False, False], kind="stable")
-    return active.drop(columns=["_created_sort"], errors="ignore").head(limit).to_dict("records")
+    recent = active.drop(columns=["_created_sort"], errors="ignore").head(limit)
+    holdings = normalize_holdings(db.read_table("holdings"))
+    return enrich_buy_transactions_with_holdings(recent, holdings).to_dict("records")
+
+
+def enrich_buy_transactions_with_holdings(transactions: pd.DataFrame, holdings: pd.DataFrame) -> pd.DataFrame:
+    output = normalize_buy_transactions(transactions)
+    if output.empty:
+        return output
+    holdings = normalize_holdings(holdings)
+
+    row_id_lookup = {}
+    symbol_lookup = {}
+    for _, holding in holdings.iterrows():
+        row_id = str(holding.get("row_id", "") or "").strip()
+        ticker = str(holding.get("티커 또는 종목코드", "") or "").strip().upper()
+        if row_id:
+            row_id_lookup[row_id] = holding
+        if ticker and ticker not in symbol_lookup:
+            symbol_lookup[ticker] = holding
+
+    display_tickers = []
+    display_names = []
+    display_sources = []
+    for _, tx in output.iterrows():
+        raw_ticker = str(tx.get("티커", "") or "").strip().upper()
+        raw_name = str(tx.get("종목명", "") or "").strip()
+        batch_id = str(tx.get("일괄반영ID", "") or "").strip()
+        asset_id = str(tx.get("자산ID", "") or "").strip()
+        holding = None
+        if asset_id:
+            holding = row_id_lookup.get(asset_id)
+        if holding is None and raw_ticker and not is_internal_batch_symbol(raw_ticker, batch_id):
+            holding = symbol_lookup.get(raw_ticker)
+
+        holding_ticker = str(holding.get("티커 또는 종목코드", "") or "").strip().upper() if holding is not None else ""
+        holding_name = str(holding.get("종목명", "") or "").strip() if holding is not None else ""
+        ticker = "" if is_internal_batch_symbol(raw_ticker, batch_id) else raw_ticker
+        name = "" if is_internal_batch_symbol(raw_name, batch_id) else raw_name
+
+        display_tickers.append(ticker or holding_ticker)
+        display_names.append(name or holding_name)
+        display_sources.append("holding" if (not ticker or not name) and holding is not None else "transaction")
+
+    output["_display_ticker"] = display_tickers
+    output["_display_asset_name"] = display_names
+    output["_display_source"] = display_sources
+    return output
 
 
 def normalize_buy_transactions(df: pd.DataFrame | None) -> pd.DataFrame:
@@ -2048,14 +2102,118 @@ def is_truthy(value) -> bool:
 
 
 def format_buy_transaction_label(tx: dict) -> str:
-    created_at = str(tx.get("생성일시", "") or "")
-    symbol = str(tx.get("티커", "") or "")
-    account = str(tx.get("계좌", "") or "")
-    quantity = format_quantity_for_display(tx.get("수량"), "", "", symbol)
-    unit_price = format_number_for_display(tx.get("단가"), 4)
-    amount = format_number_for_display(tx.get("금액"), 2)
-    currency = str(tx.get("통화", "") or "")
-    return f"{created_at} | {symbol} | {quantity}주 × {unit_price} | {account} 계좌 | {amount} {currency}"
+    title, detail, created_at, internal_note = buy_transaction_display_parts(tx)
+    lines = [title, detail, created_at]
+    if internal_note:
+        lines.append(internal_note)
+    return "\n".join(line for line in lines if line)
+
+
+def format_buy_transaction_confirmation(tx: dict) -> str:
+    title, detail, _, internal_note = buy_transaction_display_parts(tx)
+    lines = [title, detail]
+    if internal_note:
+        lines.append(internal_note)
+    return "\n".join(line for line in lines if line)
+
+
+def buy_transaction_display_parts(tx: dict) -> tuple[str, str, str, str]:
+    ticker = str(tx.get("_display_ticker", "") or "").strip().upper()
+    asset_name = str(tx.get("_display_asset_name", "") or "").strip()
+    raw_ticker = str(tx.get("티커", "") or "").strip().upper()
+    raw_name = str(tx.get("종목명", "") or "").strip()
+    batch_id = str(tx.get("일괄반영ID", "") or "").strip()
+    asset_id = str(tx.get("자산ID", "") or "").strip()
+    if not ticker and not is_internal_batch_symbol(raw_ticker, batch_id):
+        ticker = raw_ticker
+    if not asset_name and not is_internal_batch_symbol(raw_name, batch_id):
+        asset_name = raw_name
+
+    if ticker and asset_name and ticker != asset_name:
+        title = f"{ticker} · {asset_name}"
+    elif ticker:
+        title = ticker
+    elif asset_name:
+        title = asset_name
+    else:
+        title = f"종목 정보 없음 · 자산 ID {asset_id or '-'}"
+
+    account = format_account_label(tx.get("계좌"))
+    quantity = format_quantity_compact(tx.get("수량"))
+    currency = str(tx.get("통화", "") or "").upper()
+    unit_price = format_unit_price_for_revert(tx.get("단가"), currency)
+    amount_value = parse_number(tx.get("금액")) or parse_number(tx.get("수량")) * parse_number(tx.get("단가"))
+    amount = format_money_for_revert(amount_value, currency)
+    created_at = format_datetime_for_display(tx.get("생성일시"))
+    detail = f"{account} | {quantity}주 × {unit_price} = {amount}"
+    internal_note = f"내부 batch: {batch_id}" if batch_id and (not ticker and not asset_name) else ""
+    return title, detail, created_at, internal_note
+
+
+def is_internal_batch_symbol(value: object, batch_id: str = "") -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if batch_id and text == str(batch_id).strip():
+        return True
+    return bool(re.fullmatch(r"BATCH[\w-]*", text, flags=re.IGNORECASE))
+
+
+def format_account_label(value: object) -> str:
+    account = str(value or "").strip()
+    if not account:
+        return "계좌 미지정"
+    return account if account.endswith("계좌") else f"{account} 계좌"
+
+
+def format_quantity_compact(value: object) -> str:
+    quantity = parse_number(value)
+    return f"{quantity:.8f}".rstrip("0").rstrip(".") or "0"
+
+
+def format_money_for_revert(value: object, currency: str) -> str:
+    amount = parse_number(value)
+    if str(currency or "").upper() == "KRW":
+        return f"{amount:,.0f} KRW"
+    return f"{amount:,.2f} {str(currency or '').upper()}".strip()
+
+
+def format_unit_price_for_revert(value: object, currency: str) -> str:
+    unit_price = parse_number(value)
+    if str(currency or "").upper() == "KRW":
+        return f"{unit_price:,.0f} KRW"
+    return f"{unit_price:,.4f} {str(currency or '').upper()}".strip()
+
+
+def format_datetime_for_display(value: object) -> str:
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.isna(parsed):
+        return str(value or "")
+    if parsed.tzinfo is not None:
+        parsed = parsed.tz_convert(APP_TIMEZONE)
+    return parsed.strftime("%Y-%m-%d %H:%M")
+
+
+def apply_buy_transaction_card_style() -> None:
+    st.markdown(
+        """
+        <style>
+        div[role="radiogroup"] > label {
+            border: 1px solid #d7dde5;
+            border-radius: 8px;
+            padding: 10px 12px;
+            margin-bottom: 8px;
+            background: #ffffff;
+            white-space: pre-line;
+        }
+        div[role="radiogroup"] > label:has(input:checked) {
+            border-color: #1a73e8;
+            background: #eef5ff;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def revert_buy_transaction(transaction_id: str) -> None:
