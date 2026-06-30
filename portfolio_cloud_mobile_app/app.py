@@ -4,6 +4,7 @@ import os
 import html
 import hmac
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -54,7 +55,7 @@ from src.repositories.holdings_repository import (
     ensure_row_ids,
     update_holdings_sort_order,
 )
-from src.symbol_resolver import SecurityLookupResult, lookup_security, normalize_symbol
+from src import symbol_resolver
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -88,6 +89,16 @@ APP_TIMEZONE = ZoneInfo("Asia/Seoul")
 UTC_TIMEZONE = ZoneInfo("UTC")
 DATA_CACHE_TTL_SECONDS = 1
 DEFAULT_APP_PASSWORD = "92837"
+
+
+@dataclass(frozen=True)
+class AppSecurityLookupResult:
+    market: str
+    symbol: str
+    name: str
+    success: bool
+    source: str
+    reason: str = ""
 
 
 st.set_page_config(page_title="포트폴리오", page_icon=str(APP_DIR / "assets" / "Yadon.ico"), layout="wide")
@@ -330,6 +341,51 @@ def materialize_holding_values(values: dict[str, object]) -> dict[str, object]:
     target["보유수량"] = target["합산_보유수량"]
     target["평균단가"] = parse_number(target.get("평균단가"))
     return target
+
+
+SecurityLookupResult = AppSecurityLookupResult
+
+
+def normalize_symbol(market: str, symbol: str) -> str:
+    normalize_func = getattr(symbol_resolver, "normalize_symbol", None)
+    if callable(normalize_func):
+        return str(normalize_func(market, symbol))
+    return "".join(str(symbol or "").split()).upper()
+
+
+def lookup_security(market: str, symbol: str, asset_class: str | None = None, sub_asset_class: str | None = None) -> AppSecurityLookupResult:
+    lookup_func = getattr(symbol_resolver, "lookup_security", None)
+    if callable(lookup_func):
+        result = lookup_func(market, symbol, asset_class, sub_asset_class)
+        return AppSecurityLookupResult(
+            str(getattr(result, "market", market) or "").upper(),
+            str(getattr(result, "symbol", normalize_symbol(market, symbol)) or ""),
+            str(getattr(result, "name", "") or ""),
+            bool(getattr(result, "success", False)),
+            str(getattr(result, "source", "symbol_resolver") or "symbol_resolver"),
+            str(getattr(result, "reason", "") or ""),
+        )
+
+    normalized_market = str(market or "").strip().upper()
+    normalized_symbol = normalize_symbol(normalized_market, symbol)
+    get_name_func = getattr(symbol_resolver, "get_security_name", None)
+    if not normalized_symbol:
+        return AppSecurityLookupResult(normalized_market, "", "", False, "input", "empty_symbol")
+    if callable(get_name_func):
+        try:
+            name = str(get_name_func(normalized_market, normalized_symbol, asset_class, sub_asset_class) or "")
+            success = bool(name and name != normalized_symbol)
+            return AppSecurityLookupResult(
+                normalized_market,
+                normalized_symbol,
+                name or normalized_symbol,
+                success,
+                "legacy_get_security_name",
+                "" if success else "metadata_name_missing",
+            )
+        except Exception as exc:
+            return AppSecurityLookupResult(normalized_market, normalized_symbol, "", False, "legacy_get_security_name", type(exc).__name__)
+    return AppSecurityLookupResult(normalized_market, normalized_symbol, normalized_symbol, False, "symbol_resolver_unavailable", "lookup_function_missing")
 
 
 PLOTLY_CONFIG = {

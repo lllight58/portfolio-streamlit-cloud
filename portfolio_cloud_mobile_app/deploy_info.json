@@ -1,5 +1,5 @@
 ﻿{
-    "deployed_at_kst":  "2026-06-30 11:41:45",
-    "message":  "Fix stale holdings repository import",
+    "deployed_at_kst":  "2026-06-30 11:46:17",
+    "message":  "Fix stale symbol resolver import",
     "streamlit_url":  "https://lllight58-portfolio-stream-portfolio-cloud-mobile-appapp-6nltfr.streamlit.app/"
 }
