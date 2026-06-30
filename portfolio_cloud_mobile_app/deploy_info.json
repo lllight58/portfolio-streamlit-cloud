@@ -1,5 +1,5 @@
 ﻿{
-    "deployed_at_kst":  "2026-06-30 12:49:30",
-    "message":  "Invalidate benchmark session state for after-tax return method",
+    "deployed_at_kst":  "2026-06-30 12:51:57",
+    "message":  "Make benchmark imports tolerant of stale price_fetcher modules",
     "streamlit_url":  "https://lllight58-portfolio-stream-portfolio-cloud-mobile-appapp-6nltfr.streamlit.app/"
 }

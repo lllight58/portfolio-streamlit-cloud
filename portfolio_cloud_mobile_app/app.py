@@ -48,12 +48,7 @@ from src.portfolio_calculator import (
     normalize_holdings,
     normalize_sub_asset_class,
 )
-from src.price_fetcher import (
-    BENCHMARK_RETURN_METHOD,
-    DIVIDEND_TAX_RATE,
-    fetch_all_prices,
-    fetch_benchmark_after_tax_total_return,
-)
+from src import price_fetcher
 from src.repositories import holdings_repository as holdings_repo
 from src.repositories.holdings_repository import (
     delete_holdings_by_selectors,
@@ -72,6 +67,14 @@ MOBILE_MENUS = ["홈", "자산", "매수", "원금", "가격", "공시", "설정
 DESKTOP_MENUS = ["대시보드", "자산 입력", "추가매수", "투자원금", "시세 업데이트", "주요 공시", "설정", "Excel 가져오기/내보내기"]
 QUANTITY_COLUMNS = ["새빛_보유수량", "희주_보유수량", "합산_보유수량", "보유수량"]
 QUANTITY_RAW_PREFIX = "__raw_"
+BENCHMARK_RETURN_METHOD = getattr(price_fetcher, "BENCHMARK_RETURN_METHOD", "after_tax_total_return_v1")
+DIVIDEND_TAX_RATE = getattr(price_fetcher, "DIVIDEND_TAX_RATE", 0.154)
+fetch_all_prices = price_fetcher.fetch_all_prices
+fetch_benchmark_after_tax_total_return = getattr(
+    price_fetcher,
+    "fetch_benchmark_after_tax_total_return",
+    price_fetcher.fetch_benchmark_return,
+)
 BENCHMARK_RETURN_NOTE = "기준: 배당금 15.4% 세금 차감 후 재투자한 Total Return"
 PROFIT_COLOR = "#D93025"
 LOSS_COLOR = "#1A73E8"
