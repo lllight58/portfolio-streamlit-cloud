@@ -476,7 +476,9 @@ def show_dashboard() -> None:
                 settings_values, capital_flows
             )
         st.rerun()
-    render_return_history_section(load_table_cached("portfolio_snapshots"), total_value, return_rate, settings_values)
+    render_return_history_section(
+        load_table_cached("portfolio_snapshots"), total_value, return_rate, settings_values, capital_flows
+    )
 
     if calculated.empty:
         st.info("자산 데이터가 없습니다. Excel 가져오기 또는 자산 입력에서 데이터를 추가하세요.")
@@ -545,7 +547,7 @@ def show_mobile_dashboard() -> None:
                 settings_values, capital_flows
             )
         st.rerun()
-    render_return_history_section(snapshots, total_value, return_rate, settings_values)
+    render_return_history_section(snapshots, total_value, return_rate, settings_values, capital_flows)
 
     if calculated.empty:
         st.info("자산 데이터가 없습니다. 자산 메뉴 또는 Excel 업로드로 데이터를 추가하세요.")
@@ -1144,7 +1146,7 @@ def render_holdings_delete_controls(holdings: pd.DataFrame) -> None:
 def render_holdings_order_controls(holdings: pd.DataFrame, context: str = "desktop") -> None:
     st.divider()
     st.subheader("자산 표시 순서 변경")
-    st.caption("위/아래 버튼으로 원하는 순서를 만든 뒤 순서 저장 버튼을 누르세요.")
+    st.caption("각 자산 버튼을 드래그해 원하는 순서를 만든 뒤 순서 저장 버튼을 누르세요.")
 
     order_items = build_asset_order_items(holdings)
     if not order_items:
@@ -1357,7 +1359,37 @@ def build_asset_order_items(assets_df: pd.DataFrame | None) -> list[dict[str, st
 
 
 def render_asset_order_sortable(order_items: list[dict[str, str]], context: str) -> list[dict[str, str]] | None:
-    return None
+    try:
+        from streamlit_sortables import sort_items
+
+        labels = [item["label"] for item in order_items]
+        label_to_item = {item["label"]: item for item in order_items}
+        sorted_labels = sort_items(
+            labels,
+            direction="vertical",
+            key=f"{context}_holdings_sortable_order",
+            custom_style="""
+                .sortable-component { padding: 0; min-height: 48px; display: block; }
+                .sortable-container { gap: 6px; min-height: 48px; overflow: visible; }
+                .sortable-item {
+                    min-height: 40px;
+                    padding: 8px 10px;
+                    font-size: 13px;
+                    line-height: 1.25;
+                    border-radius: 8px;
+                    border: 1px solid #d7dde5;
+                    background: #fff;
+                    color: #1f2937;
+                    cursor: grab;
+                }
+            """,
+        )
+        if not sorted_labels:
+            return None
+        return [label_to_item[label] for label in sorted_labels if label in label_to_item]
+    except Exception as exc:
+        st.info(f"드래그 기능을 불러오지 못해 위/아래 버튼 방식으로 전환했습니다. ({type(exc).__name__})")
+        return None
 
 
 def render_asset_order_fallback(order_items: list[dict[str, str]], context: str) -> list[dict[str, str]]:
@@ -2759,14 +2791,20 @@ def render_return_history_section(
     current_value: float,
     cumulative_return: float,
     settings_values: dict[str, str],
+    capital_flows: pd.DataFrame,
 ) -> None:
     if st.button("누적수익률 상세 보기", use_container_width=True):
         st.session_state["show_return_history"] = not st.session_state.get("show_return_history", False)
     if not st.session_state.get("show_return_history", False):
         return
     with st.spinner("연도별 수익률을 계산하는 중입니다."):
-        history = build_return_history_table(snapshots, current_value, cumulative_return, settings_values)
-    st.caption("※ 벤치마크 수익률은 배당금 15.4% 세금 차감 후 재투자하고 USD/KRW 환율을 반영한 원화 기준 Total Return입니다.")
+        history = build_return_history_table(
+            snapshots, current_value, cumulative_return, settings_values, capital_flows
+        )
+    st.caption(
+        "※ 현재 연도 벤치마크와 누적 벤치마크는 원금 추가 납입 시점을 반영하며, "
+        "배당금 15.4% 세금 차감 후 재투자하고 USD/KRW 환율을 반영합니다."
+    )
     st.dataframe(history, use_container_width=True, hide_index=True)
 
 
@@ -2775,6 +2813,7 @@ def build_return_history_table(
     current_value: float,
     cumulative_return: float,
     settings_values: dict[str, str],
+    capital_flows: pd.DataFrame,
 ) -> pd.DataFrame:
     current_year = datetime.now().year
     years = list(range(2026, current_year + 1))
@@ -2790,6 +2829,18 @@ def build_return_history_table(
         BENCHMARK_RETURN_METHOD,
         DIVIDEND_TAX_RATE,
     )
+    if current_year == 2026:
+        contributions = build_dashboard_benchmark_contributions(capital_flows)
+        adjusted_current, _ = fetch_benchmark_after_tax_total_return(
+            settings_values.get("주식 벤치마크 티커", "VT") or "VT",
+            settings_values.get("채권 벤치마크 티커", "BND") or "BND",
+            settings_values.get("금 벤치마크 티커", "GLD") or "GLD",
+            parse_number(settings_values.get("주식 비중", "60")) / 100,
+            parse_number(settings_values.get("채권 비중", "30")) / 100,
+            parse_number(settings_values.get("금 비중", "10")) / 100,
+            capital_contributions=contributions,
+        )
+        benchmark_returns[current_year] = adjusted_current
     rows = []
     cumulative_benchmark = 1.0
     has_benchmark = False

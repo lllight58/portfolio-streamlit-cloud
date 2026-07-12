@@ -418,6 +418,34 @@ class KoreanPriceFetcherTests(unittest.TestCase):
         self.assertEqual(result, ["VT 가격 조회에 실패했습니다. 티커가 올바른지 확인해주세요."])
 
 
+class ReturnHistoryBenchmarkTests(unittest.TestCase):
+    @patch("app.fetch_benchmark_after_tax_total_return")
+    @patch("app.annual_benchmark_returns_cached")
+    def test_2026_history_and_cumulative_use_cash_flow_adjusted_benchmark(
+        self, mock_annual_benchmark, mock_adjusted_benchmark
+    ):
+        mock_annual_benchmark.return_value = {2026: 0.20}
+        mock_adjusted_benchmark.return_value = (0.0966, None)
+        flows = pd.DataFrame(
+            [
+                ["2026-05-31 00:00:00", "초기원금", 51_330_210, "KRW", "", 51_330_210],
+            ],
+            columns=["일시", "유형", "금액", "통화", "메모", "반영 후 투자원금"],
+        )
+
+        result = app.build_return_history_table(
+            pd.DataFrame(),
+            55_000_000,
+            0.07,
+            {"주식 비중": "75", "채권 비중": "20", "금 비중": "5"},
+            flows,
+        )
+
+        self.assertEqual(result.loc[result["구분"] == "2026", "벤치마크 수익률"].iloc[0], "+9.66%")
+        self.assertEqual(result.loc[result["구분"] == "누적", "벤치마크 수익률"].iloc[0], "+9.66%")
+        self.assertTrue(mock_adjusted_benchmark.call_args.kwargs["capital_contributions"])
+
+
 class BenchmarkAfterTaxReturnTests(unittest.TestCase):
     def test_cash_flow_adjusted_return_invests_each_contribution_on_next_trading_day(self):
         tr_index = pd.Series(
