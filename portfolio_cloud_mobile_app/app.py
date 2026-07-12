@@ -1144,7 +1144,7 @@ def render_holdings_delete_controls(holdings: pd.DataFrame) -> None:
 def render_holdings_order_controls(holdings: pd.DataFrame, context: str = "desktop") -> None:
     st.divider()
     st.subheader("자산 표시 순서 변경")
-    st.caption("항목을 드래그해 원하는 순서를 만든 뒤 순서 저장 버튼을 누르세요.")
+    st.caption("위/아래 버튼으로 원하는 순서를 만든 뒤 순서 저장 버튼을 누르세요.")
 
     order_items = build_asset_order_items(holdings)
     if not order_items:
@@ -1357,37 +1357,7 @@ def build_asset_order_items(assets_df: pd.DataFrame | None) -> list[dict[str, st
 
 
 def render_asset_order_sortable(order_items: list[dict[str, str]], context: str) -> list[dict[str, str]] | None:
-    try:
-        from src.sortable_component import sort_items as sortable_items_component
-
-        labels = [item["label"] for item in order_items]
-        label_to_item = {item["label"]: item for item in order_items}
-        sorted_labels = sortable_items_component(
-            labels,
-            direction="vertical",
-            key=f"{context}_holdings_sortable_order",
-            custom_style="""
-                .sortable-component { padding: 0; min-height: 48px; display: block; }
-                .sortable-container { gap: 6px; min-height: 48px; overflow: visible; }
-                .sortable-item {
-                    min-height: 40px;
-                    padding: 8px 10px;
-                    font-size: 13px;
-                    line-height: 1.25;
-                    border-radius: 6px;
-                    border: 1px solid #d7dde5;
-                    background: #fff;
-                    color: #1f2937;
-                }
-            """,
-        )
-    except Exception as exc:
-        st.warning(f"드래그 기능을 불러오지 못했습니다. 위/아래 버튼으로 전환합니다. ({type(exc).__name__})")
-        return None
-    if not sorted_labels:
-        st.warning("드래그 목록이 비어 있습니다. 아래 이동 버튼으로 순서를 변경하세요.")
-        return None
-    return [label_to_item[label] for label in sorted_labels if label in label_to_item]
+    return None
 
 
 def render_asset_order_fallback(order_items: list[dict[str, str]], context: str) -> list[dict[str, str]]:
