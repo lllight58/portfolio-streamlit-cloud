@@ -104,7 +104,7 @@ SYMBOL_NAME_CACHE = {
 }
 APP_TIMEZONE = ZoneInfo("Asia/Seoul")
 UTC_TIMEZONE = ZoneInfo("UTC")
-DATA_CACHE_TTL_SECONDS = 1
+DATA_CACHE_TTL_SECONDS = 30
 DEFAULT_APP_PASSWORD = "92837"
 
 
@@ -685,11 +685,26 @@ def show_mobile_holdings_editor() -> None:
     message = st.session_state.pop("mobile_holdings_message", None)
     if message:
         st.success(message)
-    with st.expander("새 자산 추가", expanded=holdings.empty):
+
+    task_options = ["자산 수정", "새 자산 추가", "표시 순서 변경"] if not holdings.empty else ["새 자산 추가"]
+    selected_task = st.radio(
+        "자산 작업 선택",
+        task_options,
+        horizontal=True,
+        key="mobile_asset_task",
+        label_visibility="collapsed",
+    )
+
+    if selected_task == "새 자산 추가":
         render_mobile_holding_form(holdings, None, "new")
+        return
 
     if holdings.empty:
         st.info("등록된 자산이 없습니다.")
+        return
+
+    if selected_task == "표시 순서 변경":
+        render_holdings_order_controls(holdings, context="mobile")
         return
 
     labels = mobile_holding_labels(holdings)
@@ -721,7 +736,7 @@ def show_mobile_holdings_editor() -> None:
                 f"{format_quantity_for_display(row.get('희주_보유수량'), sub_asset, row.get('시장', ''), symbol)}"
             )
             st.caption(f"평균단가: {format_number_for_display(row.get('평균단가'), 2)}")
-        with st.expander("선택 자산 수정", expanded=True):
+        with st.container(border=True):
             render_mobile_holding_form(holdings, row, row_id)
             if st.button("선택 자산 삭제", key=f"mobile_delete_holding_{row_id}", use_container_width=True):
                 db.backup_database("before_mobile_holding_delete")
@@ -730,10 +745,6 @@ def show_mobile_holdings_editor() -> None:
                 st.session_state.pop("mobile_selected_holding", None)
                 st.session_state["mobile_holdings_message"] = f"{symbol} 자산을 삭제했습니다."
                 st.rerun()
-
-    with st.expander("자산 표시 순서 변경", expanded=False):
-        render_holdings_order_controls(holdings, context="mobile")
-
 
 def mobile_holding_labels(holdings: pd.DataFrame) -> dict[str, int]:
     labels: dict[str, int] = {}
@@ -837,7 +848,6 @@ def render_mobile_holding_form(holdings: pd.DataFrame, row: pd.Series | None, ke
     sub_asset = st.selectbox(
         "세부자산군",
         ASSET_CLASSES,
-        index=safe_index(ASSET_CLASSES, st.session_state.get(f"mh_asset_{key_prefix}", asset_value)),
         key=f"mh_asset_{key_prefix}",
         on_change=on_mobile_holding_class_change,
         args=(key_prefix,),
@@ -846,7 +856,6 @@ def render_mobile_holding_form(holdings: pd.DataFrame, row: pd.Series | None, ke
     market = st.selectbox(
         "시장",
         MARKETS,
-        index=safe_index(MARKETS, st.session_state.get(f"mh_market_{key_prefix}", market_value)),
         key=f"mh_market_{key_prefix}",
         on_change=on_mobile_holding_market_change,
         args=(key_prefix,),
