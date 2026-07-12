@@ -5,6 +5,7 @@ import html
 import hmac
 import re
 import time
+import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -2981,4 +2982,9 @@ def apply_mobile_style() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        st.error("앱 실행 중 오류가 발생했습니다.")
+        st.info("아래 진단 내용을 확인해 원인을 수정할 수 있습니다.")
+        st.code(traceback.format_exc(), language="python")
