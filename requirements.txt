@@ -9,7 +9,5 @@ openpyxl>=3.1.2
 yfinance>=0.2.40
 requests>=2.32.0
 streamlit-sortables>=0.3.1
-finance-datareader>=0.9.90
-pykrx>=1.0.48
 python-dateutil>=2.9.0
 openai>=1.30.0
