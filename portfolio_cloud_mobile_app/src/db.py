@@ -300,6 +300,7 @@ def initialize_database() -> None:
     EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
     BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
     if is_supabase():
+        get_database_url("supabase")
         return
     if is_sqlite():
         sqlite_path().parent.mkdir(parents=True, exist_ok=True)

@@ -12,7 +12,7 @@ from src.symbol_resolver import crypto_yfinance_symbol, is_crypto_route, normali
 
 APP_TIMEZONE = ZoneInfo("Asia/Seoul")
 DIVIDEND_TAX_RATE = 0.154
-BENCHMARK_RETURN_METHOD = "after_tax_total_return_v1"
+BENCHMARK_RETURN_METHOD = "after_tax_total_return_krw_v2"
 
 
 def now_text() -> str:
@@ -122,7 +122,8 @@ def fetch_benchmark_after_tax_total_return(
     year: int | None = None,
 ) -> tuple[float | None, str | None]:
     """
-    벤치마크 수익률을 배당금 15.4% 세금 차감 후 재투자한 Total Return 기준으로 계산한다.
+    벤치마크 수익률을 배당금 15.4% 세금 차감 후 재투자하고 USD/KRW 환율을
+    반영한 원화 기준 Total Return으로 계산한다.
 
     Yahoo Finance의 Adj Close는 세전 배당 재투자 효과가 섞여 있으므로 사용하지 않는다.
     history(auto_adjust=False, actions=True)의 Close와 Dividends를 이용해 각 구성 ETF의
@@ -159,17 +160,24 @@ def fetch_benchmark_after_tax_total_return(
             return None, f"{', '.join(symbols.keys())} 가격/배당 데이터를 가져오지 못했습니다."
 
         benchmark = build_weighted_benchmark_after_tax_tr(daily_returns_by_ticker, symbols)
-        value = calculate_calendar_year_return_from_index(
+        fx_history = fetch_usdkrw_history(start, end)
+        benchmark = build_krw_adjusted_benchmark_tr(
             benchmark["benchmark_after_tax_tr_index"],
+            fx_history,
+        )
+        if benchmark.empty:
+            return None, f"{target_year}년 USD/KRW 환율 데이터를 가져오지 못했습니다."
+        value = calculate_calendar_year_return_from_index(
+            benchmark["benchmark_after_tax_tr_krw_index"],
             target_year,
         )
         if value is None:
-            return None, f"{target_year}년 벤치마크 세후 Total Return 데이터를 계산할 수 없습니다."
+            return None, f"{target_year}년 벤치마크 원화 기준 세후 Total Return 데이터를 계산할 수 없습니다."
         if missing:
             return value, f"일부 벤치마크 데이터 누락: {', '.join(missing)}"
         return value, None
     except Exception as exc:
-        return None, f"벤치마크 세후 Total Return 조회 실패: {exc}"
+        return None, f"벤치마크 원화 기준 세후 Total Return 조회 실패: {exc}"
 
 
 def benchmark_history_window(target_year: int, is_ytd: bool) -> tuple[datetime, datetime]:
@@ -191,6 +199,18 @@ def fetch_benchmark_price_history(symbol: str, start: datetime, end: datetime) -
         actions=True,
     )
     return history if history is not None else pd.DataFrame()
+
+
+def fetch_usdkrw_history(start: datetime, end: datetime) -> pd.Series:
+    history = yf.Ticker("KRW=X").history(
+        start=start.strftime("%Y-%m-%d"),
+        end=end.strftime("%Y-%m-%d"),
+        interval="1d",
+        auto_adjust=False,
+    )
+    if history is None or history.empty or "Close" not in history.columns:
+        return pd.Series(dtype=float)
+    return pd.to_numeric(history["Close"], errors="coerce").dropna()
 
 
 def build_after_tax_total_return_index(
@@ -249,6 +269,40 @@ def build_weighted_benchmark_after_tax_tr(
             "benchmark_after_tax_tr_index": (1 + benchmark_daily_return).cumprod(),
         }
     )
+
+
+def build_krw_adjusted_benchmark_tr(benchmark_tr_index: pd.Series, usdkrw: pd.Series) -> pd.DataFrame:
+    benchmark_tr_index = normalize_tr_index(benchmark_tr_index)
+    usdkrw = normalize_tr_index(usdkrw)
+    if benchmark_tr_index.empty or usdkrw.empty:
+        return pd.DataFrame(
+            columns=[
+                "benchmark_after_tax_tr_index",
+                "usdkrw",
+                "benchmark_after_tax_tr_krw_index",
+            ]
+        )
+
+    df = pd.concat(
+        [
+            benchmark_tr_index.rename("benchmark_after_tax_tr_index"),
+            usdkrw.rename("usdkrw"),
+        ],
+        axis=1,
+    ).sort_index()
+    df[["benchmark_after_tax_tr_index", "usdkrw"]] = df[["benchmark_after_tax_tr_index", "usdkrw"]].ffill()
+    df = df.dropna(subset=["benchmark_after_tax_tr_index", "usdkrw"])
+    df = df[df["usdkrw"] > 0].copy()
+    if df.empty:
+        return pd.DataFrame(
+            columns=[
+                "benchmark_after_tax_tr_index",
+                "usdkrw",
+                "benchmark_after_tax_tr_krw_index",
+            ]
+        )
+    df["benchmark_after_tax_tr_krw_index"] = df["benchmark_after_tax_tr_index"] * df["usdkrw"]
+    return df
 
 
 def calculate_ytd_return(tr_index: pd.Series) -> float | None:
@@ -311,7 +365,7 @@ def fetch_benchmark_return(
     gold_weight: float = 0.1,
     year: int | None = None,
 ) -> tuple[float | None, str | None]:
-    """호환용 wrapper. 실제 계산 기준은 세후 배당 재투자 Total Return이다."""
+    """호환용 wrapper. 실제 계산 기준은 원화 기준 세후 배당 재투자 Total Return이다."""
     return fetch_benchmark_after_tax_total_return(
         stock_symbol,
         bond_symbol,

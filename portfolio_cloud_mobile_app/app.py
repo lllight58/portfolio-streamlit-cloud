@@ -68,7 +68,7 @@ MOBILE_MENUS = ["홈", "자산", "매수", "원금", "가격", "공시", "설정
 DESKTOP_MENUS = ["대시보드", "자산 입력", "추가매수", "투자원금", "시세 업데이트", "주요 공시", "설정", "Excel 가져오기/내보내기"]
 QUANTITY_COLUMNS = ["새빛_보유수량", "희주_보유수량", "합산_보유수량", "보유수량"]
 QUANTITY_RAW_PREFIX = "__raw_"
-BENCHMARK_RETURN_METHOD = getattr(price_fetcher, "BENCHMARK_RETURN_METHOD", "after_tax_total_return_v1")
+BENCHMARK_RETURN_METHOD = getattr(price_fetcher, "BENCHMARK_RETURN_METHOD", "after_tax_total_return_krw_v2")
 DIVIDEND_TAX_RATE = getattr(price_fetcher, "DIVIDEND_TAX_RATE", 0.154)
 fetch_all_prices = price_fetcher.fetch_all_prices
 fetch_benchmark_after_tax_total_return = getattr(
@@ -453,7 +453,7 @@ def show_dashboard() -> None:
         ("평가손익", format_krw(profit), format_percent(return_rate)),
         ("누적수익률", format_percent(return_rate), None),
         ("올해 수익률", format_percent(yearly_return), None),
-        ("벤치마크 YTD 수익률", format_percent(benchmark_return) if benchmark_return is not None else "미조회", None),
+        ("벤치마크 YTD 수익률(원화)", format_percent(benchmark_return) if benchmark_return is not None else "미조회", None),
         ("새빛 계좌 총 평가금액", format_krw(float(calculated.get("새빛_평가금액", pd.Series(dtype=float)).sum())), None),
         ("희주 계좌 총 평가금액", format_krw(float(calculated.get("희주_평가금액", pd.Series(dtype=float)).sum())), None),
     ]:
@@ -461,8 +461,8 @@ def show_dashboard() -> None:
     st.caption(BENCHMARK_RETURN_NOTE)
     if benchmark_error:
         st.caption(benchmark_error)
-    if st.button("벤치마크 올해 수익률 조회", use_container_width=True):
-        with st.spinner("벤치마크 수익률을 조회하는 중입니다."):
+    if st.button("벤치마크 원화 YTD 수익률 조회", use_container_width=True):
+        with st.spinner("벤치마크 원화 기준 수익률을 조회하는 중입니다."):
             st.session_state["benchmark_return"], st.session_state["benchmark_error"] = fetch_dashboard_benchmark(settings_values)
         st.rerun()
     render_return_history_section(load_table_cached("portfolio_snapshots"), total_value, return_rate, settings_values)
@@ -519,7 +519,7 @@ def show_mobile_dashboard() -> None:
         ("평가손익", format_krw(profit), profit),
         ("누적수익률", format_percent(return_rate), return_rate),
         ("올해 수익률", format_percent(yearly_return), yearly_return),
-        ("벤치마크 YTD 수익률", format_percent(benchmark_return) if benchmark_return is not None else "미조회", benchmark_return),
+        ("벤치마크 YTD 수익률(원화)", format_percent(benchmark_return) if benchmark_return is not None else "미조회", benchmark_return),
         ("새빛 계좌", format_krw(saebit_value), None),
         ("희주 계좌", format_krw(heeju_value), None),
     ]
@@ -528,8 +528,8 @@ def show_mobile_dashboard() -> None:
     st.caption(BENCHMARK_RETURN_NOTE)
     if benchmark_error:
         st.caption(benchmark_error)
-    if st.button("벤치마크 올해 수익률 조회", use_container_width=True):
-        with st.spinner("벤치마크 수익률을 조회하는 중입니다."):
+    if st.button("벤치마크 원화 YTD 수익률 조회", use_container_width=True):
+        with st.spinner("벤치마크 원화 기준 수익률을 조회하는 중입니다."):
             st.session_state["benchmark_return"], st.session_state["benchmark_error"] = fetch_dashboard_benchmark(settings_values)
         st.rerun()
     render_return_history_section(snapshots, total_value, return_rate, settings_values)
@@ -2734,7 +2734,7 @@ def render_return_history_section(
         return
     with st.spinner("연도별 수익률을 계산하는 중입니다."):
         history = build_return_history_table(snapshots, current_value, cumulative_return, settings_values)
-    st.caption("※ 벤치마크 수익률은 가격 수익률이 아니라 배당금 15.4% 세금 차감 후 재투자 기준 Total Return입니다.")
+    st.caption("※ 벤치마크 수익률은 배당금 15.4% 세금 차감 후 재투자하고 USD/KRW 환율을 반영한 원화 기준 Total Return입니다.")
     st.dataframe(history, use_container_width=True, hide_index=True)
 
 

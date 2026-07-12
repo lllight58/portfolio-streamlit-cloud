@@ -11,6 +11,7 @@ from src.portfolio_calculator import HOLDINGS_COLUMNS, sample_holdings
 from src.price_fetcher import (
     DIVIDEND_TAX_RATE,
     build_after_tax_total_return_index,
+    build_krw_adjusted_benchmark_tr,
     build_weighted_benchmark_after_tax_tr,
     calculate_calendar_year_return_from_index,
 )
@@ -412,6 +413,24 @@ class BenchmarkAfterTaxReturnTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(calculate_calendar_year_return_from_index(tr_index, 2026), 0.21)
+
+    def test_krw_adjusted_benchmark_reflects_usdkrw_change(self):
+        usd_tr_index = pd.Series(
+            [1.00, 1.10, 1.21],
+            index=pd.to_datetime(["2025-12-31", "2026-01-02", "2026-12-31"]),
+        )
+        usdkrw = pd.Series(
+            [1300.0, 1430.0, 1430.0],
+            index=pd.to_datetime(["2025-12-31", "2026-01-02", "2026-12-31"]),
+        )
+
+        krw_benchmark = build_krw_adjusted_benchmark_tr(usd_tr_index, usdkrw)
+        result = calculate_calendar_year_return_from_index(
+            krw_benchmark["benchmark_after_tax_tr_krw_index"],
+            2026,
+        )
+
+        self.assertAlmostEqual(result, (1.21 * 1430.0) / (1.00 * 1300.0) - 1)
 
 
 if __name__ == "__main__":
