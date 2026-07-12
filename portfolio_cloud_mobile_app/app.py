@@ -1129,9 +1129,6 @@ def render_holdings_order_controls(holdings: pd.DataFrame, context: str = "deskt
     st.divider()
     st.subheader("자산 표시 순서 변경")
     st.caption("자산 표시 순서를 바꾸고 싶으면 아래 항목을 드래그해서 원하는 순서로 배치한 뒤, 순서 저장 버튼을 누르세요.")
-    if context == "mobile":
-        render_mobile_asset_order_editor(holdings)
-        return
 
     order_items = build_asset_order_items(holdings)
     if not order_items:
@@ -1147,7 +1144,7 @@ def render_holdings_order_controls(holdings: pd.DataFrame, context: str = "deskt
     if sorted_items is None:
         sorted_items = render_asset_order_fallback(order_items, context)
 
-    if st.button("순서 저장", use_container_width=True):
+    if st.button("순서 저장", key=f"{context}_save_asset_order", use_container_width=True):
         order_items = [
             {"row_id": item["id"], "sort_order": index}
             for index, item in enumerate(sorted_items)
@@ -1157,7 +1154,11 @@ def render_holdings_order_controls(holdings: pd.DataFrame, context: str = "deskt
         updated_count = update_holdings_sort_order(order_items)
         st.session_state.pop("holdings_editor_df", None)
         sync_after_holdings_mutation()
-        st.session_state["holdings_editor_message"] = f"자산 표시 순서를 저장했습니다. ({updated_count}건)"
+        message = f"자산 표시 순서를 저장했습니다. ({updated_count}건)"
+        if context == "mobile":
+            st.session_state["mobile_holdings_message"] = message
+        else:
+            st.session_state["holdings_editor_message"] = message
         st.rerun()
 
 
