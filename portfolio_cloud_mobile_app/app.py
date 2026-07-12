@@ -1661,6 +1661,7 @@ def show_price_update() -> None:
             prices, errors = fetch_all_prices(update_targets)
             previous_prices = load_table_cached("prices")
             prices = preserve_previous_prices_on_failure(prices, previous_prices)
+            errors = suppress_errors_for_preserved_prices(errors, prices)
         db.backup_database("before_price_update")
         db.write_table("prices", prices)
         clear_cached_tables("prices")
@@ -1689,6 +1690,19 @@ def preserve_previous_prices_on_failure(latest: pd.DataFrame, previous: pd.DataF
         output.at[index, "USD/KRW"] = parse_number(old.get("USD/KRW", row.get("USD/KRW", 0)))
         output.at[index, "상태"] = "기존 저장가격 유지"
     return output
+
+
+def suppress_errors_for_preserved_prices(errors: list[str], prices: pd.DataFrame) -> list[str]:
+    if not errors or prices is None or prices.empty:
+        return errors
+    preserved = set(
+        prices.loc[prices["상태"].astype(str) == "기존 저장가격 유지", "티커 또는 종목코드"]
+        .fillna("")
+        .astype(str)
+    )
+    if not preserved:
+        return errors
+    return [error for error in errors if not any(error.startswith(f"{symbol} ") for symbol in preserved)]
 
 
 def show_disclosures() -> None:

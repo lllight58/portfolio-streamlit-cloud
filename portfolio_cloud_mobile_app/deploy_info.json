@@ -1,5 +1,5 @@
 ﻿{
-    "deployed_at_kst":  "2026-07-12 18:54:26",
-    "message":  "Fix resilient Korean asset price lookup",
+    "deployed_at_kst":  "2026-07-12 18:59:51",
+    "message":  "Suppress stale Korean price warnings and force latest deploy",
     "streamlit_url":  "https://lllight58-portfolio-stream-portfolio-cloud-mobile-appapp-6nltfr.streamlit.app/"
 }

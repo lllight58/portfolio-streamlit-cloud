@@ -404,6 +404,19 @@ class KoreanPriceFetcherTests(unittest.TestCase):
         self.assertEqual(result.loc[0, "현재가"], 13820.0)
         self.assertEqual(result.loc[0, "상태"], "기존 저장가격 유지")
 
+    def test_preserved_price_does_not_show_failure_warning(self):
+        prices = pd.DataFrame(
+            [{"티커 또는 종목코드": "0060H0", "현재가": 13635.0, "상태": "기존 저장가격 유지"}]
+        )
+        errors = [
+            "0060H0 가격 조회에 실패했습니다. 국내 가격 데이터 없음",
+            "VT 가격 조회에 실패했습니다. 티커가 올바른지 확인해주세요.",
+        ]
+
+        result = app.suppress_errors_for_preserved_prices(errors, prices)
+
+        self.assertEqual(result, ["VT 가격 조회에 실패했습니다. 티커가 올바른지 확인해주세요."])
+
 
 class BenchmarkAfterTaxReturnTests(unittest.TestCase):
     def test_cash_flow_adjusted_return_invests_each_contribution_on_next_trading_day(self):
