@@ -1358,7 +1358,7 @@ def build_asset_order_items(assets_df: pd.DataFrame | None) -> list[dict[str, st
 
 def render_asset_order_sortable(order_items: list[dict[str, str]], context: str) -> list[dict[str, str]] | None:
     try:
-        from streamlit_sortables import sort_items as sortable_items_component
+        from src.sortable_component import sort_items as sortable_items_component
 
         labels = [item["label"] for item in order_items]
         label_to_item = {item["label"]: item for item in order_items}
