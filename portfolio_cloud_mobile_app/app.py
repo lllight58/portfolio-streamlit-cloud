@@ -16,10 +16,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-try:
-    from streamlit_sortables import sort_items
-except Exception:
-    sort_items = None
+sort_items = None
 
 try:
     from dotenv import load_dotenv
@@ -1149,7 +1146,7 @@ def render_holdings_delete_controls(holdings: pd.DataFrame) -> None:
 def render_holdings_order_controls(holdings: pd.DataFrame, context: str = "desktop") -> None:
     st.divider()
     st.subheader("자산 표시 순서 변경")
-    st.caption("자산 표시 순서를 바꾸고 싶으면 아래 항목을 드래그해서 원하는 순서로 배치한 뒤, 순서 저장 버튼을 누르세요.")
+    st.caption("위/아래 버튼으로 원하는 순서를 만든 뒤 순서 저장 버튼을 누르세요.")
 
     order_items = build_asset_order_items(holdings)
     if not order_items:
@@ -1363,7 +1360,6 @@ def build_asset_order_items(assets_df: pd.DataFrame | None) -> list[dict[str, st
 
 def render_asset_order_sortable(order_items: list[dict[str, str]], context: str) -> list[dict[str, str]] | None:
     if sort_items is None:
-        st.warning("드래그 앤 드롭 컴포넌트를 사용할 수 없어 위/아래 이동 방식으로 표시합니다.")
         return None
 
     labels = [item["label"] for item in order_items]
