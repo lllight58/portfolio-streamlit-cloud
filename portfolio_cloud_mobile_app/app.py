@@ -17,11 +17,6 @@ import plotly.express as px
 import streamlit as st
 
 try:
-    from streamlit_sortables import sort_items
-except Exception:
-    sort_items = None
-
-try:
     from dotenv import load_dotenv
 
     load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
@@ -1362,13 +1357,12 @@ def build_asset_order_items(assets_df: pd.DataFrame | None) -> list[dict[str, st
 
 
 def render_asset_order_sortable(order_items: list[dict[str, str]], context: str) -> list[dict[str, str]] | None:
-    if sort_items is None:
-        st.info("드래그 기능을 불러오지 못해 위/아래 버튼 방식으로 표시합니다.")
-        return None
     try:
+        from streamlit_sortables import sort_items as sortable_items_component
+
         labels = [item["label"] for item in order_items]
         label_to_item = {item["label"]: item for item in order_items}
-        sorted_labels = sort_items(
+        sorted_labels = sortable_items_component(
             labels,
             direction="vertical",
             key=f"{context}_holdings_sortable_order",
