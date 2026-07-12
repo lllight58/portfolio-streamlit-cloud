@@ -1659,6 +1659,8 @@ def show_price_update() -> None:
         with st.spinner("시세를 조회하는 중입니다."):
             update_targets = holdings.drop_duplicates(subset=[column for column in ["시장", "티커 또는 종목코드"] if column in holdings.columns])
             prices, errors = fetch_all_prices(update_targets)
+            previous_prices = load_table_cached("prices")
+            prices = preserve_previous_prices_on_failure(prices, previous_prices)
         db.backup_database("before_price_update")
         db.write_table("prices", prices)
         clear_cached_tables("prices")
@@ -1666,6 +1668,27 @@ def show_price_update() -> None:
         for error in errors[:10]:
             st.warning(error)
     st.dataframe(load_table_cached("prices"), use_container_width=True, hide_index=True, column_config=number_column_config())
+
+
+def preserve_previous_prices_on_failure(latest: pd.DataFrame, previous: pd.DataFrame) -> pd.DataFrame:
+    if latest is None or latest.empty or previous is None or previous.empty:
+        return latest
+    output = latest.copy()
+    previous_by_symbol = previous.drop_duplicates("티커 또는 종목코드", keep="last").set_index("티커 또는 종목코드")
+    for index, row in output.iterrows():
+        if pd.notna(row.get("현재가")) and parse_number(row.get("현재가")) > 0:
+            continue
+        symbol = str(row.get("티커 또는 종목코드", "") or "")
+        if symbol not in previous_by_symbol.index:
+            continue
+        old = previous_by_symbol.loc[symbol]
+        old_price = parse_number(old.get("현재가", 0))
+        if old_price <= 0:
+            continue
+        output.at[index, "현재가"] = old_price
+        output.at[index, "USD/KRW"] = parse_number(old.get("USD/KRW", row.get("USD/KRW", 0)))
+        output.at[index, "상태"] = "기존 저장가격 유지"
+    return output
 
 
 def show_disclosures() -> None:

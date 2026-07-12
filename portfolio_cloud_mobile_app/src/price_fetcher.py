@@ -432,6 +432,20 @@ def fetch_kr_price(code: str) -> float:
     if not clean_code:
         raise ValueError("국내 종목코드가 비어 있습니다.")
 
+    fetchers = [
+        fetch_kr_price_from_naver_mobile,
+        fetch_kr_price_from_naver_chart,
+        fetch_kr_price_from_yahoo,
+    ]
+    errors: list[str] = []
+    for fetcher in fetchers:
+        try:
+            price = float(fetcher(clean_code))
+            if price > 0:
+                return price
+        except Exception as exc:
+            errors.append(f"{fetcher.__name__}: {type(exc).__name__}")
+
     try:
         import FinanceDataReader as fdr
 
@@ -458,7 +472,64 @@ def fetch_kr_price(code: str) -> float:
     except Exception:
         pass
 
-    raise ValueError("국내 가격 데이터 없음")
+    detail = ", ".join(errors) if errors else "사용 가능한 데이터 소스 없음"
+    raise ValueError(f"국내 가격 데이터 없음 ({detail})")
+
+
+def fetch_kr_price_from_naver_mobile(code: str) -> float:
+    response = requests.get(
+        f"https://m.stock.naver.com/api/stock/{code}/basic",
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://m.stock.naver.com/",
+            "Accept": "application/json, text/plain, */*",
+        },
+        timeout=10,
+    )
+    response.raise_for_status()
+    data = response.json()
+    price = data.get("closePrice") or data.get("currentPrice")
+    if price is None:
+        raise ValueError("네이버 모바일 현재가 없음")
+    value = float(str(price).replace(",", ""))
+    if value <= 0:
+        raise ValueError("네이버 모바일 현재가 오류")
+    return value
+
+
+def fetch_kr_price_from_naver_chart(code: str) -> float:
+    response = requests.get(
+        "https://fchart.stock.naver.com/sise.nhn",
+        params={"symbol": code, "timeframe": "day", "count": 1, "requestType": 0},
+        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.naver.com/"},
+        timeout=10,
+    )
+    response.raise_for_status()
+    import re
+
+    matches = re.findall(r'data="([^"]+)"', response.text)
+    if not matches:
+        raise ValueError("네이버 차트 가격 데이터 없음")
+    fields = matches[-1].split("|")
+    if len(fields) < 5:
+        raise ValueError("네이버 차트 가격 형식 오류")
+    value = float(fields[4])
+    if value <= 0:
+        raise ValueError("네이버 차트 종가 오류")
+    return value
+
+
+def fetch_kr_price_from_yahoo(code: str) -> float:
+    candidates = [code] if code.endswith((".KS", ".KQ")) else [f"{code}.KS", f"{code}.KQ"]
+    for candidate in candidates:
+        try:
+            history = yf.Ticker(candidate).history(period="5d", interval="1d")
+            closes = history["Close"].dropna() if history is not None and "Close" in history.columns else pd.Series(dtype=float)
+            if not closes.empty and float(closes.iloc[-1]) > 0:
+                return float(closes.iloc[-1])
+        except Exception:
+            continue
+    raise ValueError("Yahoo 한국시장 가격 데이터 없음")
 
 
 def fetch_kr_price_from_naver(code: str) -> float:

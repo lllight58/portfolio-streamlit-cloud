@@ -1,6 +1,7 @@
 import unittest
 import os
 from pathlib import Path
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 import pandas as pd
@@ -15,6 +16,8 @@ from src.price_fetcher import (
     build_weighted_benchmark_after_tax_tr,
     calculate_cash_flow_adjusted_return_from_index,
     calculate_calendar_year_return_from_index,
+    fetch_kr_price_from_naver_chart,
+    fetch_kr_price_from_naver_mobile,
 )
 from src.repositories.holdings_repository import upsert_holding_row
 from src.symbol_resolver import lookup_security
@@ -366,6 +369,40 @@ class AssetOrderTests(unittest.TestCase):
         holdings["sort_order"] = [2, 1, 0]
         normalized = app.normalize_holdings(holdings)
         self.assertEqual(list(normalized["sort_order"]), [0, 1, 2])
+
+
+class KoreanPriceFetcherTests(unittest.TestCase):
+    @patch("src.price_fetcher.requests.get")
+    def test_naver_mobile_price_supports_numeric_and_alphanumeric_codes(self, mock_get):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"closePrice": "13,635"}
+        mock_get.return_value = response
+
+        self.assertEqual(fetch_kr_price_from_naver_mobile("0060H0"), 13635.0)
+        self.assertIn("0060H0", mock_get.call_args.args[0])
+
+    @patch("src.price_fetcher.requests.get")
+    def test_naver_chart_price_reads_latest_close(self, mock_get):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.text = '<item data="20260710|13500|13800|13400|13635|100" />'
+        mock_get.return_value = response
+
+        self.assertEqual(fetch_kr_price_from_naver_chart("0060H0"), 13635.0)
+
+    def test_failed_refresh_preserves_previous_price(self):
+        latest = pd.DataFrame(
+            [{"티커 또는 종목코드": "030190", "현재가": None, "USD/KRW": 0, "상태": "조회 실패"}]
+        )
+        previous = pd.DataFrame(
+            [{"티커 또는 종목코드": "030190", "현재가": 13820.0, "USD/KRW": 1400.0, "상태": "정상"}]
+        )
+
+        result = app.preserve_previous_prices_on_failure(latest, previous)
+
+        self.assertEqual(result.loc[0, "현재가"], 13820.0)
+        self.assertEqual(result.loc[0, "상태"], "기존 저장가격 유지")
 
 
 class BenchmarkAfterTaxReturnTests(unittest.TestCase):
