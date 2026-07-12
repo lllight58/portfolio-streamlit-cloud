@@ -77,7 +77,12 @@ fetch_benchmark_after_tax_total_return = getattr(
     "fetch_benchmark_after_tax_total_return",
     price_fetcher.fetch_benchmark_return,
 )
-BENCHMARK_RETURN_NOTE = "기준: 배당금 15.4% 세금 차감 후 재투자한 Total Return"
+BENCHMARK_RETURN_NOTE = (
+    "기준: 원금 투입시점 반영 · 2026년 1~7월은 매월 1일 360만원 추가투자 가정 · "
+    "7월 10일 이후는 실제 추가입금 기록 반영 · 배당세 15.4% 차감 후 재투자"
+)
+BENCHMARK_SYNTHETIC_CUTOFF = pd.Timestamp("2026-07-10")
+BENCHMARK_SYNTHETIC_MONTHLY_AMOUNT = 3_600_000.0
 PROFIT_COLOR = "#D93025"
 LOSS_COLOR = "#1A73E8"
 NEUTRAL_COLOR = "#333333"
@@ -321,6 +326,9 @@ def clear_cached_tables(*table_names: str) -> None:
         make_all_charts_cached.clear()
     except Exception:
         pass
+    if "capital_flows" in table_names:
+        st.session_state.pop("benchmark_return", None)
+        st.session_state.pop("benchmark_error", None)
 
 
 def sync_after_holdings_mutation(*extra_tables: str) -> None:
@@ -469,7 +477,9 @@ def show_dashboard() -> None:
         st.caption(benchmark_error)
     if st.button("벤치마크 원화 YTD 수익률 조회", use_container_width=True):
         with st.spinner("벤치마크 원화 기준 수익률을 조회하는 중입니다."):
-            st.session_state["benchmark_return"], st.session_state["benchmark_error"] = fetch_dashboard_benchmark(settings_values)
+            st.session_state["benchmark_return"], st.session_state["benchmark_error"] = fetch_dashboard_benchmark(
+                settings_values, capital_flows
+            )
         st.rerun()
     render_return_history_section(load_table_cached("portfolio_snapshots"), total_value, return_rate, settings_values)
 
@@ -536,7 +546,9 @@ def show_mobile_dashboard() -> None:
         st.caption(benchmark_error)
     if st.button("벤치마크 원화 YTD 수익률 조회", use_container_width=True):
         with st.spinner("벤치마크 원화 기준 수익률을 조회하는 중입니다."):
-            st.session_state["benchmark_return"], st.session_state["benchmark_error"] = fetch_dashboard_benchmark(settings_values)
+            st.session_state["benchmark_return"], st.session_state["benchmark_error"] = fetch_dashboard_benchmark(
+                settings_values, capital_flows
+            )
         st.rerun()
     render_return_history_section(snapshots, total_value, return_rate, settings_values)
 
@@ -2854,7 +2866,36 @@ def annual_benchmark_returns_cached(
     return returns
 
 
-def fetch_dashboard_benchmark(settings_values: dict[str, str]) -> tuple[float | None, str | None]:
+def build_dashboard_benchmark_contributions(capital_flows: pd.DataFrame) -> list[tuple[pd.Timestamp, float]]:
+    flows = normalize_capital_flows(capital_flows).copy()
+    flows["_date"] = pd.to_datetime(flows["일시"], errors="coerce").dt.normalize()
+    cutoff_flows = flows[flows["_date"] <= BENCHMARK_SYNTHETIC_CUTOFF].copy()
+    cutoff_principal = current_invested_principal(cutoff_flows)
+    synthetic_total = BENCHMARK_SYNTHETIC_MONTHLY_AMOUNT * 7
+    initial_principal = cutoff_principal - synthetic_total
+    if initial_principal < 0:
+        raise ValueError("2026년 7월 10일 기준 원금이 가정 추가입금 합계보다 작습니다.")
+
+    contributions: list[tuple[pd.Timestamp, float]] = [(pd.Timestamp("2025-12-31"), initial_principal)]
+    contributions.extend(
+        (pd.Timestamp(year=2026, month=month, day=1), BENCHMARK_SYNTHETIC_MONTHLY_AMOUNT)
+        for month in range(1, 8)
+    )
+    actual_later = flows[
+        (flows["_date"] > BENCHMARK_SYNTHETIC_CUTOFF)
+        & flows["유형"].isin({"추가입금", "추가매수연동"})
+    ]
+    contributions.extend(
+        (row["_date"], parse_number(row["금액"]))
+        for _, row in actual_later.iterrows()
+        if parse_number(row["금액"]) > 0
+    )
+    return contributions
+
+
+def fetch_dashboard_benchmark(
+    settings_values: dict[str, str], capital_flows: pd.DataFrame
+) -> tuple[float | None, str | None]:
     try:
         stock_symbol = settings_values.get("주식 벤치마크 티커", "VT") or "VT"
         bond_symbol = settings_values.get("채권 벤치마크 티커", "BND") or "BND"
@@ -2862,7 +2903,16 @@ def fetch_dashboard_benchmark(settings_values: dict[str, str]) -> tuple[float | 
         stock_weight = parse_number(settings_values.get("주식 비중", "60")) / 100
         bond_weight = parse_number(settings_values.get("채권 비중", "30")) / 100
         gold_weight = parse_number(settings_values.get("금 비중", "10")) / 100
-        return fetch_benchmark_after_tax_total_return(stock_symbol, bond_symbol, gold_symbol, stock_weight, bond_weight, gold_weight)
+        contributions = build_dashboard_benchmark_contributions(capital_flows)
+        return fetch_benchmark_after_tax_total_return(
+            stock_symbol,
+            bond_symbol,
+            gold_symbol,
+            stock_weight,
+            bond_weight,
+            gold_weight,
+            capital_contributions=contributions,
+        )
     except Exception as exc:
         return None, f"벤치마크 조회 실패: {exc}"
 

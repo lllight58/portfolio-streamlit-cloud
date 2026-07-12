@@ -13,6 +13,7 @@ from src.price_fetcher import (
     build_after_tax_total_return_index,
     build_krw_adjusted_benchmark_tr,
     build_weighted_benchmark_after_tax_tr,
+    calculate_cash_flow_adjusted_return_from_index,
     calculate_calendar_year_return_from_index,
 )
 from src.repositories.holdings_repository import upsert_holding_row
@@ -368,6 +369,22 @@ class AssetOrderTests(unittest.TestCase):
 
 
 class BenchmarkAfterTaxReturnTests(unittest.TestCase):
+    def test_cash_flow_adjusted_return_invests_each_contribution_on_next_trading_day(self):
+        tr_index = pd.Series(
+            [100.0, 110.0, 121.0],
+            index=pd.to_datetime(["2025-12-31", "2026-01-02", "2026-01-05"]),
+        )
+        contributions = [("2025-12-31", 1_000.0), ("2026-01-01", 1_000.0)]
+
+        result = calculate_cash_flow_adjusted_return_from_index(
+            tr_index,
+            contributions,
+            tr_index.index,
+        )
+
+        expected_value = 1_000.0 * 121.0 / 100.0 + 1_000.0 * 121.0 / 110.0
+        self.assertAlmostEqual(result, expected_value / 2_000.0 - 1)
+
     def test_dividend_after_tax_total_return_is_between_price_and_pretax_return(self):
         history = pd.DataFrame(
             {

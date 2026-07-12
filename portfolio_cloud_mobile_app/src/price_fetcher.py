@@ -12,7 +12,7 @@ from src.symbol_resolver import crypto_yfinance_symbol, is_crypto_route, normali
 
 APP_TIMEZONE = ZoneInfo("Asia/Seoul")
 DIVIDEND_TAX_RATE = 0.154
-BENCHMARK_RETURN_METHOD = "after_tax_total_return_krw_v2"
+BENCHMARK_RETURN_METHOD = "cash_flow_adjusted_after_tax_total_return_krw_v3"
 
 
 def now_text() -> str:
@@ -120,6 +120,7 @@ def fetch_benchmark_after_tax_total_return(
     bond_weight: float = 0.3,
     gold_weight: float = 0.1,
     year: int | None = None,
+    capital_contributions: list[tuple[str | datetime | pd.Timestamp, float]] | None = None,
 ) -> tuple[float | None, str | None]:
     """
     벤치마크 수익률을 배당금 15.4% 세금 차감 후 재투자하고 USD/KRW 환율을
@@ -160,6 +161,7 @@ def fetch_benchmark_after_tax_total_return(
             return None, f"{', '.join(symbols.keys())} 가격/배당 데이터를 가져오지 못했습니다."
 
         benchmark = build_weighted_benchmark_after_tax_tr(daily_returns_by_ticker, symbols)
+        benchmark_trading_dates = benchmark.index
         fx_history = fetch_usdkrw_history(start, end)
         benchmark = build_krw_adjusted_benchmark_tr(
             benchmark["benchmark_after_tax_tr_index"],
@@ -167,10 +169,17 @@ def fetch_benchmark_after_tax_total_return(
         )
         if benchmark.empty:
             return None, f"{target_year}년 USD/KRW 환율 데이터를 가져오지 못했습니다."
-        value = calculate_calendar_year_return_from_index(
-            benchmark["benchmark_after_tax_tr_krw_index"],
-            target_year,
-        )
+        if capital_contributions is None:
+            value = calculate_calendar_year_return_from_index(
+                benchmark["benchmark_after_tax_tr_krw_index"],
+                target_year,
+            )
+        else:
+            value = calculate_cash_flow_adjusted_return_from_index(
+                benchmark["benchmark_after_tax_tr_krw_index"],
+                capital_contributions,
+                benchmark_trading_dates,
+            )
         if value is None:
             return None, f"{target_year}년 벤치마크 원화 기준 세후 Total Return 데이터를 계산할 수 없습니다."
         if missing:
@@ -178,6 +187,47 @@ def fetch_benchmark_after_tax_total_return(
         return value, None
     except Exception as exc:
         return None, f"벤치마크 원화 기준 세후 Total Return 조회 실패: {exc}"
+
+
+def calculate_cash_flow_adjusted_return_from_index(
+    tr_index: pd.Series,
+    capital_contributions: list[tuple[str | datetime | pd.Timestamp, float]],
+    trading_dates: pd.Index | None = None,
+) -> float | None:
+    """각 원금 투입일에 벤치마크를 매수했다고 가정한 단순 원금가중 수익률."""
+    index = normalize_tr_index(tr_index)
+    if index.empty or not capital_contributions:
+        return None
+
+    index.index = pd.DatetimeIndex([pd.Timestamp(value).date() for value in index.index])
+    index = index.groupby(level=0).last().sort_index()
+    usable_dates = trading_dates if trading_dates is not None else index.index
+    usable_dates = pd.DatetimeIndex([pd.Timestamp(value).date() for value in usable_dates]).unique().sort_values()
+    usable_dates = usable_dates[usable_dates <= index.index[-1]]
+    if usable_dates.empty:
+        return None
+
+    end_value = float(index.loc[usable_dates[-1]])
+    principal = 0.0
+    benchmark_value = 0.0
+    for raw_date, raw_amount in capital_contributions:
+        amount = float(raw_amount or 0)
+        if amount == 0:
+            continue
+        contribution_date = pd.Timestamp(raw_date).normalize()
+        candidates = usable_dates[usable_dates >= contribution_date]
+        if candidates.empty:
+            continue
+        purchase_date = candidates[0]
+        purchase_index = float(index.loc[purchase_date])
+        if purchase_index <= 0:
+            continue
+        principal += amount
+        benchmark_value += amount * end_value / purchase_index
+
+    if principal <= 0:
+        return None
+    return benchmark_value / principal - 1
 
 
 def benchmark_history_window(target_year: int, is_ytd: bool) -> tuple[datetime, datetime]:
