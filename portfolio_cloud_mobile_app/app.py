@@ -131,6 +131,11 @@ def main() -> None:
             "DATABASE_BACKEND=supabase와 SUPABASE_POOLER_DATABASE_URL을 반드시 넣어야 합니다. "
             "로컬 .env 파일은 Streamlit Cloud에 자동 반영되지 않습니다."
         )
+    if getattr(db, "supabase_config_missing", lambda: False)():
+        st.warning(
+            "Supabase DB URL이 설정되지 않아 임시 로컬 저장소로 실행 중입니다. "
+            "기존 데이터를 보려면 Streamlit Cloud Secrets에 SUPABASE_POOLER_DATABASE_URL을 설정하세요."
+        )
 
     mode = st.radio(
         "화면 모드",

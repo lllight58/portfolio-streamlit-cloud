@@ -253,8 +253,20 @@ POSTGRES_COLUMN_MAP: dict[str, dict[str, str]] = {
 }
 
 
+def has_supabase_database_url() -> bool:
+    return bool(os.getenv("SUPABASE_POOLER_DATABASE_URL", "").strip() or os.getenv("DATABASE_URL", "").strip())
+
+
+def supabase_config_missing() -> bool:
+    requested = os.getenv("DATABASE_BACKEND", "supabase").strip().lower() or "supabase"
+    return requested == "supabase" and not has_supabase_database_url()
+
+
 def database_backend() -> str:
-    return os.getenv("DATABASE_BACKEND", "supabase").strip().lower() or "supabase"
+    requested = os.getenv("DATABASE_BACKEND", "supabase").strip().lower() or "supabase"
+    if requested == "supabase" and not has_supabase_database_url():
+        return "sqlite"
+    return requested
 
 
 def sqlite_path() -> Path:
