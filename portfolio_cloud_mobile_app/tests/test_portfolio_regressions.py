@@ -16,8 +16,10 @@ from src.price_fetcher import (
     build_weighted_benchmark_after_tax_tr,
     calculate_cash_flow_adjusted_return_from_index,
     calculate_calendar_year_return_from_index,
+    fetch_all_prices,
     fetch_kr_price_from_naver_chart,
     fetch_kr_price_from_naver_mobile,
+    fetch_usdkrw,
 )
 from src.repositories.holdings_repository import upsert_holding_row
 from src.symbol_resolver import lookup_security
@@ -447,6 +449,26 @@ class ReturnHistoryBenchmarkTests(unittest.TestCase):
 
 
 class BenchmarkAfterTaxReturnTests(unittest.TestCase):
+    @patch("src.price_fetcher.fetch_usdkrw_history")
+    def test_asset_fx_uses_same_yahoo_daily_close_history_as_benchmark(self, mock_history):
+        mock_history.return_value = pd.Series(
+            [1498.25, 1505.91],
+            index=pd.to_datetime(["2026-07-09", "2026-07-10"]),
+        )
+
+        rate, error = fetch_usdkrw()
+
+        self.assertEqual(rate, 1505.91)
+        self.assertIsNone(error)
+        mock_history.assert_called_once()
+
+    @patch("src.price_fetcher.fetch_usdkrw", return_value=(None, "환율 조회 실패"))
+    def test_price_update_keeps_saved_fx_without_warning_when_live_fx_fails(self, _mock_fx):
+        prices, errors = fetch_all_prices(pd.DataFrame(), fallback_usdkrw=1505.91)
+
+        self.assertTrue(prices.empty)
+        self.assertEqual(errors, [])
+
     def test_cash_flow_adjusted_return_invests_each_contribution_on_next_trading_day(self):
         tr_index = pd.Series(
             [100.0, 110.0, 121.0],

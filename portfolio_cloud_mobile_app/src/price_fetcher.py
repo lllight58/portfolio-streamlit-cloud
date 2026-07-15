@@ -12,21 +12,28 @@ from src.symbol_resolver import crypto_yfinance_symbol, is_crypto_route, normali
 
 APP_TIMEZONE = ZoneInfo("Asia/Seoul")
 DIVIDEND_TAX_RATE = 0.154
-BENCHMARK_RETURN_METHOD = "cash_flow_adjusted_after_tax_total_return_krw_v3"
+BENCHMARK_RETURN_METHOD = "cash_flow_adjusted_after_tax_total_return_krw_v4_shared_fx"
+USDKRW_SYMBOL = "KRW=X"
 
 
 def now_text() -> str:
     return datetime.now(APP_TIMEZONE).isoformat(timespec="seconds")
 
 
-def fetch_all_prices(holdings: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+def fetch_all_prices(
+    holdings: pd.DataFrame,
+    fallback_usdkrw: float | None = None,
+) -> tuple[pd.DataFrame, list[str]]:
     """보유자산 목록을 기준으로 가격과 USD/KRW 환율을 조회합니다."""
     errors: list[str] = []
     updated_at = now_text()
     usdkrw, fx_error = fetch_usdkrw()
     if fx_error:
-        errors.append(fx_error)
-        usdkrw = 1350.0
+        if fallback_usdkrw is not None and float(fallback_usdkrw) > 0:
+            usdkrw = float(fallback_usdkrw)
+        else:
+            errors.append(fx_error)
+            usdkrw = 1350.0
 
     rows = []
     for _, holding in holdings.iterrows():
@@ -121,6 +128,7 @@ def fetch_benchmark_after_tax_total_return(
     gold_weight: float = 0.1,
     year: int | None = None,
     capital_contributions: list[tuple[str | datetime | pd.Timestamp, float]] | None = None,
+    ending_usdkrw: float | None = None,
 ) -> tuple[float | None, str | None]:
     """
     벤치마크 수익률을 배당금 15.4% 세금 차감 후 재투자하고 USD/KRW 환율을
@@ -163,6 +171,12 @@ def fetch_benchmark_after_tax_total_return(
         benchmark = build_weighted_benchmark_after_tax_tr(daily_returns_by_ticker, symbols)
         benchmark_trading_dates = benchmark.index
         fx_history = fetch_usdkrw_history(start, end)
+        if ending_usdkrw is not None and float(ending_usdkrw) > 0 and len(benchmark_trading_dates) > 0:
+            # 자산 평가에 저장된 환율과 벤치마크 최종 평가 환율을 정확히 일치시킨다.
+            # 원금 투입일별 과거 환율은 동일 소스(Yahoo KRW=X 일별 종가)의 이력을 사용한다.
+            fx_history = normalize_tr_index(fx_history)
+            fx_history.loc[pd.Timestamp(benchmark_trading_dates[-1]).tz_localize(None)] = float(ending_usdkrw)
+            fx_history = fx_history.sort_index()
         benchmark = build_krw_adjusted_benchmark_tr(
             benchmark["benchmark_after_tax_tr_index"],
             fx_history,
@@ -252,7 +266,7 @@ def fetch_benchmark_price_history(symbol: str, start: datetime, end: datetime) -
 
 
 def fetch_usdkrw_history(start: datetime, end: datetime) -> pd.Series:
-    history = yf.Ticker("KRW=X").history(
+    history = yf.Ticker(USDKRW_SYMBOL).history(
         start=start.strftime("%Y-%m-%d"),
         end=end.strftime("%Y-%m-%d"),
         interval="1d",
@@ -578,21 +592,18 @@ def fetch_crypto_price(symbol: str) -> float:
 
 
 def fetch_usdkrw() -> tuple[float | None, str | None]:
+    """자산 평가용 환율도 벤치마크와 같은 Yahoo KRW=X 일별 종가를 사용한다."""
     try:
-        price = fetch_us_price("KRW=X")
-        if price > 0:
-            return float(price), None
+        end = datetime.now(APP_TIMEZONE).replace(tzinfo=None) + timedelta(days=1)
+        start = end - timedelta(days=14)
+        history = fetch_usdkrw_history(start, end)
+        if history is not None and not history.empty:
+            rate = float(pd.to_numeric(history, errors="coerce").dropna().iloc[-1])
+            if rate > 0:
+                return rate, None
     except Exception:
         pass
-
-    try:
-        response = requests.get("https://open.er-api.com/v6/latest/USD", timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        rate = float(data["rates"]["KRW"])
-        return rate, None
-    except Exception:
-        return None, "USD/KRW 환율 조회에 실패했습니다. 인터넷 연결을 확인해주세요."
+    return None, "USD/KRW 환율 조회에 실패했습니다. 기존 저장 환율을 유지합니다."
 
 
 def _friendly_error(symbol: str, market: str, exc: Exception) -> str:

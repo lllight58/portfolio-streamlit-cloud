@@ -74,7 +74,8 @@ fetch_benchmark_after_tax_total_return = getattr(
 )
 BENCHMARK_RETURN_NOTE = (
     "기준: 원금 투입시점 반영 · 2026년 1~7월은 매월 1일 360만원 추가투자 가정 · "
-    "7월 10일 이후는 실제 추가입금 기록 반영 · 배당세 15.4% 차감 후 재투자"
+    "7월 10일 이후는 실제 추가입금 기록 반영 · 배당세 15.4% 차감 후 재투자 · "
+    "환율은 자산 평가와 동일한 Yahoo KRW=X 일별 종가"
 )
 BENCHMARK_SYNTHETIC_CUTOFF = pd.Timestamp("2026-07-10")
 BENCHMARK_SYNTHETIC_MONTHLY_AMOUNT = 3_600_000.0
@@ -473,11 +474,11 @@ def show_dashboard() -> None:
     if st.button("벤치마크 원화 YTD 수익률 조회", use_container_width=True):
         with st.spinner("벤치마크 원화 기준 수익률을 조회하는 중입니다."):
             st.session_state["benchmark_return"], st.session_state["benchmark_error"] = fetch_dashboard_benchmark(
-                settings_values, capital_flows
+                settings_values, capital_flows, prices
             )
         st.rerun()
     render_return_history_section(
-        load_table_cached("portfolio_snapshots"), total_value, return_rate, settings_values, capital_flows
+        load_table_cached("portfolio_snapshots"), total_value, return_rate, settings_values, capital_flows, prices
     )
 
     if calculated.empty:
@@ -544,10 +545,10 @@ def show_mobile_dashboard() -> None:
     if st.button("벤치마크 원화 YTD 수익률 조회", use_container_width=True):
         with st.spinner("벤치마크 원화 기준 수익률을 조회하는 중입니다."):
             st.session_state["benchmark_return"], st.session_state["benchmark_error"] = fetch_dashboard_benchmark(
-                settings_values, capital_flows
+                settings_values, capital_flows, prices
             )
         st.rerun()
-    render_return_history_section(snapshots, total_value, return_rate, settings_values, capital_flows)
+    render_return_history_section(snapshots, total_value, return_rate, settings_values, capital_flows, prices)
 
     if calculated.empty:
         st.info("자산 데이터가 없습니다. 자산 메뉴 또는 Excel 업로드로 데이터를 추가하세요.")
@@ -1689,9 +1690,9 @@ def show_price_update() -> None:
     holdings = load_table_cached("holdings")
     if st.button("현재 보유자산 시세 조회 후 DB 저장", type="primary", use_container_width=True):
         with st.spinner("시세를 조회하는 중입니다."):
-            update_targets = holdings.drop_duplicates(subset=[column for column in ["시장", "티커 또는 종목코드"] if column in holdings.columns])
-            prices, errors = fetch_all_prices(update_targets)
             previous_prices = load_table_cached("prices")
+            update_targets = holdings.drop_duplicates(subset=[column for column in ["시장", "티커 또는 종목코드"] if column in holdings.columns])
+            prices, errors = fetch_all_prices(update_targets, current_usdkrw(previous_prices))
             prices = preserve_previous_prices_on_failure(prices, previous_prices)
             errors = suppress_errors_for_preserved_prices(errors, prices)
         db.backup_database("before_price_update")
@@ -2792,6 +2793,7 @@ def render_return_history_section(
     cumulative_return: float,
     settings_values: dict[str, str],
     capital_flows: pd.DataFrame,
+    prices: pd.DataFrame | None = None,
 ) -> None:
     if st.button("누적수익률 상세 보기", use_container_width=True):
         st.session_state["show_return_history"] = not st.session_state.get("show_return_history", False)
@@ -2799,7 +2801,7 @@ def render_return_history_section(
         return
     with st.spinner("연도별 수익률을 계산하는 중입니다."):
         history = build_return_history_table(
-            snapshots, current_value, cumulative_return, settings_values, capital_flows
+            snapshots, current_value, cumulative_return, settings_values, capital_flows, prices
         )
     st.caption(
         "※ 현재 연도 벤치마크와 누적 벤치마크는 원금 추가 납입 시점을 반영하며, "
@@ -2814,6 +2816,7 @@ def build_return_history_table(
     cumulative_return: float,
     settings_values: dict[str, str],
     capital_flows: pd.DataFrame,
+    prices: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     current_year = datetime.now().year
     years = list(range(2026, current_year + 1))
@@ -2839,6 +2842,7 @@ def build_return_history_table(
             parse_number(settings_values.get("채권 비중", "30")) / 100,
             parse_number(settings_values.get("금 비중", "10")) / 100,
             capital_contributions=contributions,
+            ending_usdkrw=current_usdkrw(prices) if prices is not None and not prices.empty else None,
         )
         benchmark_returns[current_year] = adjusted_current
     rows = []
@@ -2958,7 +2962,9 @@ def build_dashboard_benchmark_contributions(capital_flows: pd.DataFrame) -> list
 
 
 def fetch_dashboard_benchmark(
-    settings_values: dict[str, str], capital_flows: pd.DataFrame
+    settings_values: dict[str, str],
+    capital_flows: pd.DataFrame,
+    prices: pd.DataFrame | None = None,
 ) -> tuple[float | None, str | None]:
     try:
         stock_symbol = settings_values.get("주식 벤치마크 티커", "VT") or "VT"
@@ -2976,6 +2982,7 @@ def fetch_dashboard_benchmark(
             bond_weight,
             gold_weight,
             capital_contributions=contributions,
+            ending_usdkrw=current_usdkrw(prices) if prices is not None and not prices.empty else None,
         )
     except Exception as exc:
         return None, f"벤치마크 조회 실패: {exc}"
